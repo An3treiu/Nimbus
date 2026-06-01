@@ -4,6 +4,7 @@ pub struct Config {
     pub github_token: String,
     pub drive_owner: String,
     pub drive_repo: String,
+    pub drive_branch: String,
     pub database_url: String,
     pub bind_addr: String,
 }
@@ -16,6 +17,7 @@ impl Config {
             github_token: req("NIMBUS_GITHUB_TOKEN")?,
             drive_owner: req("NIMBUS_DRIVE_OWNER")?,
             drive_repo: req("NIMBUS_DRIVE_REPO")?,
+            drive_branch: get("NIMBUS_DRIVE_BRANCH").unwrap_or_else(|| "main".into()),
             database_url: get("NIMBUS_DATABASE_URL")
                 .unwrap_or_else(|| "sqlite:nimbus.db?mode=rwc".into()),
             bind_addr: get("NIMBUS_BIND_ADDR").unwrap_or_else(|| "127.0.0.1:8080".into()),
