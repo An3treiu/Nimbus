@@ -6,7 +6,8 @@ use axum::{
 };
 use nimbus_ai::ChatProvider;
 use nimbus_core::DriveFile;
-use nimbus_github::{poll_for_token, start_device_flow, DeviceCode, PollResult};
+use nimbus_crypto::Vault;
+use nimbus_github::{poll_for_token, start_device_flow, DeviceCode, GitHubClient, PollResult};
 use nimbus_search::{SearchHit, SearchIndex};
 use nimbus_storage::StorageEngine;
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,8 @@ use std::sync::Arc;
 
 /// GitHub's OAuth host (device-flow endpoints live here, not on api.github.com).
 const GITHUB_OAUTH_BASE: &str = "https://github.com";
+/// GitHub REST API root, used to verify the authenticated user.
+const GITHUB_API_BASE: &str = "https://api.github.com";
 
 /// Shared application state: the storage engine plus optional AI features.
 #[derive(Clone)]
@@ -27,6 +30,10 @@ pub struct AppState {
     pub pool: SqlitePool,
     /// OAuth App client id; `None` disables the device-flow endpoints.
     pub github_client_id: Option<String>,
+    /// The account expected to own the drive — OAuth tokens are verified against it.
+    pub drive_owner: String,
+    /// Vault for encrypting the persisted OAuth token at rest (if encryption is on).
+    pub vault: Option<Vault>,
 }
 
 /// Largest file we attempt to index for semantic search (bytes).
@@ -84,18 +91,37 @@ async fn auth_device_poll(
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
     Ok(Json(match result {
-        PollResult::Authorized(token) => {
-            st.engine.set_github_token(&token);
-            if let Err(e) = crate::tokens::save_token(&st.pool, &token).await {
-                eprintln!("nimbus: failed to persist OAuth token: {e}");
-            }
-            json!({ "status": "authorized" })
-        }
+        PollResult::Authorized(token) => accept_token(&st, token).await,
         PollResult::Pending => json!({ "status": "pending" }),
         PollResult::SlowDown => json!({ "status": "slow_down" }),
         PollResult::Denied => json!({ "status": "denied" }),
         PollResult::Failed(e) => json!({ "status": "error", "error": e }),
     }))
+}
+
+/// Verify a freshly obtained token belongs to the configured drive owner before
+/// accepting it. This prevents an attacker from injecting *their own* token into
+/// someone else's Nimbus instance via the unauthenticated device-flow endpoint.
+async fn accept_token(st: &AppState, token: String) -> Value {
+    let probe = GitHubClient::new(token.clone(), GITHUB_API_BASE.to_string());
+    match probe.get_authenticated_user().await {
+        Ok(login) if login.eq_ignore_ascii_case(&st.drive_owner) => {
+            st.engine.set_github_token(&token);
+            match crate::tokens::save_token(&st.pool, st.vault.as_ref(), &token).await {
+                Ok(true) => {}
+                Ok(false) => eprintln!(
+                    "nimbus: OAuth token active (in-memory only; enable encryption to persist)"
+                ),
+                Err(e) => eprintln!("nimbus: failed to persist OAuth token: {e}"),
+            }
+            json!({ "status": "authorized", "user": login })
+        }
+        Ok(login) => json!({
+            "status": "error",
+            "error": format!("token belongs to '{login}', not the drive owner '{}'", st.drive_owner)
+        }),
+        Err(_) => json!({ "status": "error", "error": "could not verify token owner" }),
+    }
 }
 
 async fn list_files(State(st): State<AppState>) -> Result<Json<Vec<DriveFile>>, StatusCode> {
@@ -255,6 +281,8 @@ mod tests {
             chat: None,
             pool,
             github_client_id: None,
+            drive_owner: "me".into(),
+            vault: None,
         }
     }
 
@@ -402,6 +430,8 @@ mod tests {
             chat: None,
             pool,
             github_client_id: None,
+            drive_owner: "me".into(),
+            vault: None,
         });
 
         // Upload a text file -> it should be indexed.
@@ -474,6 +504,8 @@ mod tests {
             chat: Some(Arc::new(FakeChat)),
             pool,
             github_client_id: None,
+            drive_owner: "me".into(),
+            vault: None,
         });
 
         let resp = app

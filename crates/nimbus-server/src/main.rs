@@ -1,4 +1,5 @@
 use nimbus_ai::{AiProvider, AnthropicProvider, ChatProvider, OllamaProvider, OpenAiProvider};
+use nimbus_crypto::Vault;
 use nimbus_github::GitHubClient;
 use nimbus_search::SearchIndex;
 use nimbus_server::{cache, config::Config, routes, routes::AppState, tokens, vault};
@@ -9,11 +10,27 @@ use std::sync::Arc;
 async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_lookup(|k| std::env::var(k).ok())?;
     let pool = cache::open(&cfg.database_url).await?;
-    // Token precedence: env PAT, else a previously stored OAuth token, else empty
-    // (the user can then connect via the in-app device flow).
+    // Set up the vault first — it's needed to decrypt a stored token and is
+    // shared with the request layer for encrypting newly obtained tokens.
+    let vault: Option<Vault> = if let Some(passphrase) = &cfg.encryption_passphrase {
+        let setup = vault::unlock_or_init(&pool, passphrase, cfg.recovery_key.as_deref()).await?;
+        if let Some(recovery) = setup.new_recovery_key {
+            emit_recovery_key(&recovery, cfg.recovery_key_out.as_deref())?;
+        }
+        println!("nimbus: client-side encryption ENABLED");
+        Some(setup.vault)
+    } else {
+        println!("nimbus: encryption DISABLED (set NIMBUS_ENCRYPTION_PASSPHRASE to enable)");
+        None
+    };
+
+    // Token precedence: env PAT, else a previously stored (encrypted) OAuth
+    // token, else empty (the user can connect via the in-app device flow).
     let initial_token = match &cfg.github_token {
         Some(t) => t.clone(),
-        None => tokens::load_token(&pool).await?.unwrap_or_default(),
+        None => tokens::load_token(&pool, vault.as_ref())
+            .await?
+            .unwrap_or_default(),
     };
     if initial_token.is_empty() {
         println!(
@@ -29,16 +46,8 @@ async fn main() -> anyhow::Result<()> {
         cfg.drive_repo.clone(),
         cfg.drive_branch.clone(),
     );
-
-    if let Some(passphrase) = &cfg.encryption_passphrase {
-        let setup = vault::unlock_or_init(&pool, passphrase, cfg.recovery_key.as_deref()).await?;
-        if let Some(recovery) = setup.new_recovery_key {
-            emit_recovery_key(&recovery, cfg.recovery_key_out.as_deref())?;
-        }
-        engine = engine.with_vault(setup.vault);
-        println!("nimbus: client-side encryption ENABLED");
-    } else {
-        println!("nimbus: encryption DISABLED (set NIMBUS_ENCRYPTION_PASSPHRASE to enable)");
+    if let Some(v) = &vault {
+        engine = engine.with_vault(v.clone());
     }
 
     // Optional embedding provider drives semantic search.
@@ -65,7 +74,11 @@ async fn main() -> anyhow::Result<()> {
         chat,
         pool: pool.clone(),
         github_client_id: cfg.github_client_id.clone(),
+        drive_owner: cfg.drive_owner.clone(),
+        vault: vault.clone(),
     };
+
+    warn_if_exposed(&cfg.bind_addr);
     // API routes, with the frontend served as a fallback (same origin).
     let app = match &cfg.web_dir {
         Some(dir) => {
@@ -151,6 +164,23 @@ fn build_chat_provider(cfg: &Config) -> Option<Arc<dyn ChatProvider>> {
             Some(Arc::new(AnthropicProvider::new(base, key, model)))
         }
         _ => None,
+    }
+}
+
+/// Warn loudly if binding to a non-loopback address: the API has no built-in
+/// authentication, so it must stay on loopback or sit behind an authenticating
+/// reverse proxy. (See SECURITY notes in the README.)
+fn warn_if_exposed(bind_addr: &str) {
+    let host = bind_addr
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(bind_addr);
+    let is_loopback =
+        host.starts_with("127.") || host == "localhost" || host == "::1" || host == "[::1]";
+    if !is_loopback {
+        eprintln!("\n⚠️  nimbus: bound to {bind_addr} — the API is UNAUTHENTICATED.");
+        eprintln!("    Do not expose this directly to untrusted networks. Put it behind a");
+        eprintln!("    reverse proxy that enforces authentication, or bind to 127.0.0.1.\n");
     }
 }
 

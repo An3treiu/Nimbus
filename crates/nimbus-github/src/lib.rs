@@ -86,6 +86,32 @@ impl GitHubClient {
         format!("{}/repos/{}/{}", self.base_url, owner, repo)
     }
 
+    /// Return the login of the user the current token authenticates as.
+    /// Used to verify an OAuth token actually belongs to the expected account.
+    pub async fn get_authenticated_user(&self) -> nimbus_core::Result<String> {
+        let url = format!("{}/user", self.base_url);
+        let resp = self
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| nimbus_core::NimbusError::GitHub(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(nimbus_core::NimbusError::GitHub(format!(
+                "get_authenticated_user status {}",
+                resp.status()
+            )));
+        }
+        #[derive(serde::Deserialize)]
+        struct User {
+            login: String,
+        }
+        let user: User = resp
+            .json()
+            .await
+            .map_err(|e| nimbus_core::NimbusError::GitHub(e.to_string()))?;
+        Ok(user.login)
+    }
+
     /// Fetch and decode a blob's raw bytes by SHA.
     pub async fn get_blob(
         &self,
