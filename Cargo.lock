@@ -1257,6 +1257,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "http-body-util",
  "nimbus-ai",
  "nimbus-core",
