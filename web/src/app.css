@@ -64,6 +64,10 @@ body {
 .sidebar nav button:hover { background: var(--surface-2); color: var(--text); }
 .sidebar nav button.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .sidebar nav .ic { font-size: 1.05rem; }
+.usage { padding: 0.5rem 0.6rem; }
+.usage-bar { height: 6px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.usage-bar span { display: block; height: 100%; background: var(--accent); }
+.usage-text { font-size: 0.72rem; color: var(--muted); margin-top: 0.35rem; }
 .sidebar-foot { display: flex; gap: 0.3rem; justify-content: center; flex-wrap: wrap; }
 .iconbtn {
   background: var(--surface-2); border: 1px solid var(--border); color: var(--text);

@@ -49,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = &vault {
         engine = engine.with_vault(v.clone());
     }
+    engine = engine.with_quota(cfg.quota_bytes);
 
     // Optional embedding provider drives semantic search.
     let embed_provider = build_embed_provider(&cfg);

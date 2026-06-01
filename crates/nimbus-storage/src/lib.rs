@@ -54,6 +54,7 @@ pub struct StorageEngine {
     branch: String,
     vault: Option<Vault>,
     chunk_size: usize,
+    quota_bytes: Option<u64>,
 }
 
 impl StorageEngine {
@@ -72,6 +73,7 @@ impl StorageEngine {
             branch: branch.into(),
             vault: None,
             chunk_size: DEFAULT_CHUNK_SIZE,
+            quota_bytes: None,
         }
     }
 
@@ -85,6 +87,31 @@ impl StorageEngine {
     pub fn with_chunk_size(mut self, chunk_size: usize) -> Self {
         self.chunk_size = chunk_size.max(1);
         self
+    }
+
+    /// Set a storage quota (bytes); uploads that would exceed it are rejected.
+    pub fn with_quota(mut self, quota_bytes: Option<u64>) -> Self {
+        self.quota_bytes = quota_bytes;
+        self
+    }
+
+    /// Current usage: (bytes used, file count), excluding trashed files.
+    pub async fn usage(&self) -> Result<(u64, u64)> {
+        let row: (i64, i64) = sqlx::query_as(
+            "SELECT COALESCE(SUM(size), 0), COUNT(*) FROM cached_files \
+             WHERE drive = ? AND path NOT LIKE ?",
+        )
+        .bind(self.drive_key())
+        .bind(format!("{TRASH_PREFIX}%"))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| NimbusError::Storage(e.to_string()))?;
+        Ok((row.0 as u64, row.1 as u64))
+    }
+
+    /// The configured quota in bytes, if any.
+    pub fn quota(&self) -> Option<u64> {
+        self.quota_bytes
     }
 
     /// Encrypt bytes for storage if a vault is attached, else pass through.
@@ -153,6 +180,15 @@ impl StorageEngine {
     /// Upload bytes to `path`: create a blob, commit it to the branch so it is
     /// durable, then record it in the cache.
     pub async fn upload(&self, path: &str, bytes: &[u8]) -> Result<DriveFile> {
+        if let Some(quota) = self.quota_bytes {
+            let (used, _) = self.usage().await?;
+            if used.saturating_add(bytes.len() as u64) > quota {
+                return Err(NimbusError::Storage(format!(
+                    "storage quota exceeded ({used} + {} > {quota} bytes)",
+                    bytes.len()
+                )));
+            }
+        }
         let sha = self.store_content(path, bytes).await?;
         self.gh
             .commit_blob(
@@ -881,6 +917,26 @@ mod tests {
         let files = engine.list().await.unwrap();
         let names: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(names, vec!["docs/b.txt"]);
+    }
+
+    #[tokio::test]
+    async fn usage_sums_sizes_and_enforces_quota() {
+        let server = MockServer::start().await;
+        mount_upload(&server, "s1").await;
+        let gh = GitHubClient::new("tok", server.uri());
+        let pool = memory_pool().await;
+        let engine = StorageEngine::new(gh, pool, "me", "drive", "main").with_quota(Some(5));
+
+        engine.upload("a.txt", b"abc").await.unwrap(); // 3 bytes, ok
+        let (used, count) = engine.usage().await.unwrap();
+        assert_eq!(used, 3);
+        assert_eq!(count, 1);
+
+        // Next 3 bytes would total 6 > quota 5 -> rejected.
+        let err = engine.upload("b.txt", b"xyz").await.unwrap_err();
+        assert!(matches!(err, NimbusError::Storage(_)));
+        // Usage unchanged.
+        assert_eq!(engine.usage().await.unwrap().0, 3);
     }
 
     #[tokio::test]
