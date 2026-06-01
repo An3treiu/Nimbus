@@ -126,6 +126,22 @@
 
   function basename(p) { return p.split('/').pop(); }
 
+  // Hide internal placeholder/dotfiles (e.g. .nimbuskeep used for empty folders).
+  const visibleEntries = $derived(entries.filter((e) => !basename(e.path).startsWith('.')));
+
+  async function newFolder() {
+    const name = prompt('New folder name:');
+    if (!name) return;
+    const target = cwd ? `${cwd}/${name}` : name;
+    busy = true;
+    try {
+      // Git has no empty folders, so drop a hidden placeholder to materialize it.
+      await uploadFile(`${target}/.nimbuskeep`, new Blob(['']));
+      navigateInto({ path: target });
+      status = `Folder “${name}” created`;
+    } catch (e) { status = e.message; } finally { busy = false; }
+  }
+
   async function renameEntry(entry) {
     const name = prompt('Rename to:', basename(entry.path));
     if (!name || name === basename(entry.path)) return;
@@ -250,7 +266,8 @@
           <button class:on={viewMode === 'list'} onclick={() => setViewMode('list')} title="List">≣</button>
           <button class:on={viewMode === 'grid'} onclick={() => setViewMode('grid')} title="Grid">▦</button>
         </div>
-        <button class="ghost" onclick={onSync} disabled={busy}>↻</button>
+        <button class="ghost" onclick={onSync} disabled={busy} title="Sync from GitHub">↻</button>
+        {#if view === 'drive'}<button class="ghost" onclick={newFolder} disabled={busy} title="New folder">＋📁</button>{/if}
         <label class="primary">Upload<input type="file" multiple onchange={onInputChange} hidden /></label>
       </div>
     </header>
@@ -285,14 +302,14 @@
           {/each}
         </ul>
       {:else if view === 'drive'}
-        {#if entries.length === 0}
+        {#if visibleEntries.length === 0}
           <div class="empty-state">
             <div class="big">📂</div>
             <p>This folder is empty. Drag files here or click <strong>Upload</strong>.</p>
           </div>
         {:else}
           <div class={viewMode === 'grid' ? 'grid' : 'rows-wrap'}>
-            {#each entries as entry}
+            {#each visibleEntries as entry}
               {#if entry.kind === 'folder'}
                 <div class="entry folder" class:card={viewMode === 'grid'}>
                   <button class="name" onclick={() => navigateInto(entry)}>📁 {basename(entry.path)}</button>
