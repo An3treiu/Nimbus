@@ -5,6 +5,7 @@
     search, chatWithFiles, fetchText, previewKind, formatSize,
     authStatus, deviceStart, devicePoll,
     listTrash, restoreTrash, fileHistory, restoreVersion, createShare, getUsage,
+    authMe, login, logout,
   } from './api.js';
 
   // ---- Core state ----
@@ -48,19 +49,41 @@
 
   let usage = $state(null); // { used, count, quota }
 
+  // ---- Auth gate ----
+  let authReady = $state(false);
+  let meUser = $state(null);
+  let requiresLogin = $state(false);
+  let loginUser = $state('');
+  let loginPass = $state('');
+  let loginErr = $state('');
+  const showLogin = $derived(requiresLogin && !meUser);
+
   async function refresh() {
     try { entries = await listFiles(cwd); } catch (e) { status = e.message; }
     loadUsage();
   }
   async function loadUsage() { try { usage = await getUsage(); } catch {} }
 
-  onMount(async () => {
+  async function init() {
     await refresh();
     try { allFiles = await listFiles(); } catch {}
     try { oauthAvailable = (await authStatus()).oauth_available; } catch {}
+  }
+
+  onMount(async () => {
+    const m = await authMe();
+    meUser = m.user; requiresLogin = m.requires_login; authReady = true;
+    if (!(requiresLogin && !meUser)) await init();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   });
+
+  async function doLogin() {
+    loginErr = '';
+    if (await login(loginUser.trim(), loginPass)) { meUser = loginUser.trim(); loginPass = ''; await init(); }
+    else loginErr = 'Invalid username or password.';
+  }
+  async function doLogout() { await logout(); meUser = null; requiresLogin = true; entries = []; }
 
   function onKey(e) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); togglePalette(); }
@@ -215,6 +238,18 @@
   }
 </script>
 
+{#if authReady && showLogin}
+  <div class="login-screen">
+    <div class="login-card">
+      <div class="login-brand">🌥️ Nimbus</div>
+      <p class="muted">Sign in to your drive</p>
+      <input placeholder="Username" bind:value={loginUser} onkeydown={(e) => e.key === 'Enter' && doLogin()} />
+      <input type="password" placeholder="Password" bind:value={loginPass} onkeydown={(e) => e.key === 'Enter' && doLogin()} />
+      {#if loginErr}<div class="login-err">{loginErr}</div>{/if}
+      <button class="primary" onclick={doLogin}>Sign in</button>
+    </div>
+  </div>
+{:else}
 <div class="app">
   <aside class="sidebar" class:collapsed={!sidebarOpen}>
     <div class="brand">
@@ -241,6 +276,7 @@
       <button class="iconbtn" title="Command palette (Ctrl/⌘K)" onclick={togglePalette}>⌘K</button>
       <button class="iconbtn" title="Toggle theme" onclick={toggleTheme}>{theme === 'dark' ? '🌙' : '☀️'}</button>
       <button class="iconbtn" title="Collapse" onclick={() => (sidebarOpen = !sidebarOpen)}>{sidebarOpen ? '«' : '»'}</button>
+      {#if meUser}<button class="iconbtn" title="Log out ({meUser})" onclick={doLogout}>⎋</button>{/if}
     </div>
   </aside>
 
@@ -360,6 +396,7 @@
     </main>
   </div>
 </div>
+{/if}
 
 <!-- Preview modal -->
 {#if preview}

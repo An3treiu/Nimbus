@@ -39,6 +39,15 @@ body {
 
 .app { display: flex; min-height: 100vh; }
 
+/* Login screen */
+.login-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem; }
+.login-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 2rem; width: min(360px, 90vw); display: flex; flex-direction: column; gap: 0.7rem; }
+.login-brand { font-size: 1.6rem; font-weight: 700; }
+.login-card input { padding: 0.65rem 0.8rem; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font: inherit; }
+.login-card input:focus { outline: none; border-color: var(--accent); }
+.login-card button { margin-top: 0.3rem; }
+.login-err { color: #ff8a8a; font-size: 0.85rem; }
+
 /* Sidebar */
 .sidebar {
   width: 220px;
