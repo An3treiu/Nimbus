@@ -160,41 +160,85 @@ async fn revoke_share_link(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-#[derive(Deserialize)]
-struct ShareQuery {
-    pw: Option<String>,
+/// Minimal page prompting for a share password; it re-requests the file with
+/// the password in the `X-Share-Password` header (never in the URL).
+fn share_password_page(wrong: bool) -> axum::response::Response {
+    use axum::response::{Html, IntoResponse};
+    let msg = if wrong {
+        "Wrong password — try again."
+    } else {
+        ""
+    };
+    let body = format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Protected file · Nimbus</title>
+<style>body{{font-family:system-ui,sans-serif;background:#0f1115;color:#e6e8ec;display:flex;min-height:100vh;align-items:center;justify-content:center}}
+.card{{background:#161922;border:1px solid #2a2f3a;border-radius:14px;padding:1.5rem;width:min(360px,90vw)}}
+h1{{font-size:1.1rem;margin:0 0 1rem}}input{{width:100%;padding:.6rem;border-radius:9px;border:1px solid #2a2f3a;background:#1e222c;color:#e6e8ec;box-sizing:border-box}}
+button{{margin-top:.8rem;width:100%;padding:.6rem;border:0;border-radius:9px;background:#6aa3ff;color:#07101f;font-weight:600;cursor:pointer}}
+.msg{{color:#ff8a8a;font-size:.85rem;min-height:1.2em}}</style></head>
+<body><div class="card"><h1>🌥️ This file is password-protected</h1>
+<input id="pw" type="password" placeholder="Password" autofocus>
+<div class="msg">{msg}</div>
+<button onclick="go()">Download</button></div>
+<script>
+async function go(){{
+  const pw=document.getElementById('pw').value;
+  const r=await fetch(location.pathname,{{headers:{{'X-Share-Password':pw}}}});
+  if(r.ok){{const b=await r.blob();const cd=r.headers.get('content-disposition')||'';
+    const m=cd.match(/filename="?([^"]+)"?/);const a=document.createElement('a');
+    a.href=URL.createObjectURL(b);a.download=m?m[1]:'download';a.click();}}
+  else{{location.search='?e=1';}}
+}}
+document.getElementById('pw').addEventListener('keydown',e=>{{if(e.key==='Enter')go();}});
+</script></body></html>"#
+    );
+    Html(body).into_response()
 }
 
-/// Public endpoint serving a shared file (after checking expiry + password).
+/// Public endpoint serving a shared file. The password (if any) is read from the
+/// `X-Share-Password` header — never the URL, so it can't leak via logs,
+/// browser history, or the Referer header. Direct browser hits get a prompt page.
 async fn serve_share(
     State(st): State<AppState>,
     Path(token): Path<String>,
-    Query(q): Query<ShareQuery>,
-) -> Result<axum::response::Response, StatusCode> {
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
     use crate::shares::ShareError;
+    use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
-    let path = match crate::shares::resolve_share(&st.pool, &token, q.pw.as_deref()).await {
+
+    let pw = headers
+        .get("x-share-password")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let path = match crate::shares::resolve_share(&st.pool, &token, pw.as_deref()).await {
         Ok(p) => p,
-        Err(ShareError::PasswordRequired) => return Err(StatusCode::UNAUTHORIZED),
-        Err(ShareError::BadPassword) => return Err(StatusCode::FORBIDDEN),
-        Err(ShareError::Expired) => return Err(StatusCode::GONE),
-        Err(ShareError::NotFound) => return Err(StatusCode::NOT_FOUND),
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        // For a browser navigation (no header yet), show the prompt page.
+        Err(ShareError::PasswordRequired) => return share_password_page(false),
+        Err(ShareError::BadPassword) => return share_password_page(true),
+        Err(ShareError::Expired) => return StatusCode::GONE.into_response(),
+        Err(ShareError::NotFound) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let bytes = st
-        .engine
-        .download(&path)
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let bytes = match st.engine.download(&path).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
+    };
     let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-    Ok((
-        [(
-            axum::http::header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{name}\""),
-        )],
+    (
+        [
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
+            (header::REFERRER_POLICY, "no-referrer".to_string()),
+        ],
         bytes,
     )
-        .into_response())
+        .into_response()
 }
 
 /// Report whether in-app GitHub login (device flow) is available.
