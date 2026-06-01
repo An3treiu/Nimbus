@@ -26,6 +26,8 @@ pub struct Config {
     pub ai_model: Option<String>,
     /// Chat model (for "chat with your files"); defaults per provider.
     pub ai_chat_model: Option<String>,
+    /// Optional storage quota in bytes; uploads exceeding it are rejected.
+    pub quota_bytes: Option<u64>,
     /// Optional directory of static frontend assets to serve from disk.
     /// When unset, the frontend embedded in the binary is served.
     pub web_dir: Option<String>,
@@ -53,6 +55,7 @@ impl Config {
             ai_api_key: get("NIMBUS_AI_API_KEY").filter(|s| !s.is_empty()),
             ai_model: get("NIMBUS_AI_MODEL").filter(|s| !s.is_empty()),
             ai_chat_model: get("NIMBUS_AI_CHAT_MODEL").filter(|s| !s.is_empty()),
+            quota_bytes: get("NIMBUS_QUOTA_BYTES").and_then(|s| s.parse().ok()),
             web_dir: get("NIMBUS_WEB_DIR").filter(|s| !s.is_empty()),
         })
     }

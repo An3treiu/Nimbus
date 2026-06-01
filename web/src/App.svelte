@@ -4,7 +4,7 @@
     listFiles, uploadFile, downloadUrl, deleteFile, moveFile, syncDrive,
     search, chatWithFiles, fetchText, previewKind, formatSize,
     authStatus, deviceStart, devicePoll,
-    listTrash, restoreTrash, fileHistory, restoreVersion, createShare,
+    listTrash, restoreTrash, fileHistory, restoreVersion, createShare, getUsage,
   } from './api.js';
 
   // ---- Core state ----
@@ -46,9 +46,13 @@
 
   const breadcrumb = $derived(cwd ? cwd.split('/') : []);
 
+  let usage = $state(null); // { used, count, quota }
+
   async function refresh() {
     try { entries = await listFiles(cwd); } catch (e) { status = e.message; }
+    loadUsage();
   }
+  async function loadUsage() { try { usage = await getUsage(); } catch {} }
 
   onMount(async () => {
     await refresh();
@@ -206,6 +210,17 @@
       <button class:active={view === 'chat'} onclick={() => setView('chat')}><span class="ic">💬</span>{#if sidebarOpen}Chat{/if}</button>
       <button class:active={view === 'trash'} onclick={() => setView('trash')}><span class="ic">🗑️</span>{#if sidebarOpen}Trash{/if}</button>
     </nav>
+    {#if sidebarOpen && usage}
+      <div class="usage">
+        {#if usage.quota}
+          <div class="usage-bar"><span style="width:{Math.min(100, (usage.used / usage.quota) * 100)}%"></span></div>
+          <div class="usage-text">{formatSize(usage.used)} / {formatSize(usage.quota)}</div>
+        {:else}
+          <div class="usage-text">{formatSize(usage.used)} · {usage.count} files</div>
+        {/if}
+      </div>
+    {/if}
+
     <div class="sidebar-foot">
       <button class="iconbtn" title="Command palette (Ctrl/⌘K)" onclick={togglePalette}>⌘K</button>
       <button class="iconbtn" title="Toggle theme" onclick={toggleTheme}>{theme === 'dark' ? '🌙' : '☀️'}</button>

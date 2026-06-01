@@ -96,6 +96,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/history/*path", get(file_history))
         .route("/api/restore", post(restore_version))
         .route("/api/sync", post(sync_drive))
+        .route("/api/usage", get(usage))
         .route("/api/search", get(search_files))
         .route("/api/chat", post(chat))
         .route("/api/auth/status", get(auth_status))
@@ -462,6 +463,17 @@ async fn restore_version(
         Err(nimbus_core::NimbusError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::BAD_GATEWAY),
     }
+}
+
+async fn usage(State(st): State<AppState>) -> Result<Json<Value>, StatusCode> {
+    let (used, count) = st
+        .engine
+        .usage()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        json!({ "used": used, "count": count, "quota": st.engine.quota() }),
+    ))
 }
 
 async fn sync_drive(State(st): State<AppState>) -> Result<StatusCode, StatusCode> {

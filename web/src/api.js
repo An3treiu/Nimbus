@@ -112,6 +112,12 @@ export async function devicePoll(deviceCode) {
   return r.json();
 }
 
+export async function getUsage() {
+  const r = await apiFetch('/api/usage');
+  if (!r.ok) return null;
+  return r.json();
+}
+
 export async function listTrash() {
   const r = await apiFetch('/api/trash');
   if (!r.ok) throw new Error(`trash list failed (${r.status})`);
