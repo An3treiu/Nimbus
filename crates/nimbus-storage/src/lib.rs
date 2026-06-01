@@ -1,12 +1,31 @@
 use nimbus_core::{DriveFile, FileKind, NimbusError, Result};
 use nimbus_crypto::Vault;
 use nimbus_github::GitHubClient;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+
+/// Default chunking threshold: files larger than this are split. Kept below
+/// GitHub's ~100 MB blob limit, allowing for base64 expansion (~33%).
+const DEFAULT_CHUNK_SIZE: usize = 50 * 1024 * 1024;
+
+/// Marker prefixing a chunk manifest blob, so download can tell a manifest from
+/// a regular file. Chosen to be vanishingly unlikely to start a real file.
+const MANIFEST_MAGIC: &[u8] = b"NIMBUSv1CHUNKED\n";
+
+/// Describes a large file split across multiple chunk blobs.
+#[derive(Serialize, Deserialize)]
+struct Manifest {
+    /// Total size of the reassembled (plaintext) file.
+    size: u64,
+    /// Chunk blob SHAs, in order.
+    chunks: Vec<String>,
+}
 
 /// Orchestrates the drive model on top of GitHub (durable commits) + the local cache.
 ///
 /// When a [`Vault`] is attached, file bytes are encrypted before upload and
-/// decrypted after download — GitHub only ever stores ciphertext.
+/// decrypted after download — GitHub only ever stores ciphertext. Files larger
+/// than `chunk_size` are split into multiple blobs plus a manifest.
 pub struct StorageEngine {
     gh: GitHubClient,
     pool: SqlitePool,
@@ -14,6 +33,7 @@ pub struct StorageEngine {
     repo: String,
     branch: String,
     vault: Option<Vault>,
+    chunk_size: usize,
 }
 
 impl StorageEngine {
@@ -31,12 +51,19 @@ impl StorageEngine {
             repo: repo.into(),
             branch: branch.into(),
             vault: None,
+            chunk_size: DEFAULT_CHUNK_SIZE,
         }
     }
 
     /// Attach a vault so all uploads/downloads are transparently encrypted.
     pub fn with_vault(mut self, vault: Vault) -> Self {
         self.vault = Some(vault);
+        self
+    }
+
+    /// Override the chunking threshold (bytes). Mainly for tests.
+    pub fn with_chunk_size(mut self, chunk_size: usize) -> Self {
+        self.chunk_size = chunk_size.max(1);
         self
     }
 
@@ -70,11 +97,34 @@ impl StorageEngine {
         self.drive_key()
     }
 
+    /// Store file content as one or more blobs and return the SHA to commit at
+    /// `path`. Small files become a single (optionally encrypted) blob; large
+    /// files are split into chunk blobs plus a manifest blob.
+    async fn store_content(&self, path: &str, bytes: &[u8]) -> Result<String> {
+        if bytes.len() <= self.chunk_size {
+            let stored = self.seal(path, bytes)?;
+            return self.gh.create_blob(&self.owner, &self.repo, &stored).await;
+        }
+        let mut chunks = Vec::new();
+        for chunk in bytes.chunks(self.chunk_size) {
+            let stored = self.seal(path, chunk)?;
+            chunks.push(self.gh.create_blob(&self.owner, &self.repo, &stored).await?);
+        }
+        let manifest = Manifest {
+            size: bytes.len() as u64,
+            chunks,
+        };
+        let mut blob = MANIFEST_MAGIC.to_vec();
+        blob.extend_from_slice(
+            &serde_json::to_vec(&manifest).map_err(|e| NimbusError::Storage(e.to_string()))?,
+        );
+        self.gh.create_blob(&self.owner, &self.repo, &blob).await
+    }
+
     /// Upload bytes to `path`: create a blob, commit it to the branch so it is
     /// durable, then record it in the cache.
     pub async fn upload(&self, path: &str, bytes: &[u8]) -> Result<DriveFile> {
-        let stored = self.seal(path, bytes)?;
-        let sha = self.gh.create_blob(&self.owner, &self.repo, &stored).await?;
+        let sha = self.store_content(path, bytes).await?;
         self.gh
             .commit_blob(
                 &self.owner,
@@ -178,7 +228,20 @@ impl StorageEngine {
                 .flatten();
         let sha = sha.ok_or_else(|| NimbusError::NotFound(path.to_string()))?;
         let raw = self.gh.get_blob(&self.owner, &self.repo, &sha).await?;
-        self.open(path, raw)
+
+        if raw.starts_with(MANIFEST_MAGIC) {
+            // Chunked file: fetch and decrypt each chunk, then concatenate.
+            let manifest: Manifest = serde_json::from_slice(&raw[MANIFEST_MAGIC.len()..])
+                .map_err(|e| NimbusError::Storage(e.to_string()))?;
+            let mut out = Vec::with_capacity(manifest.size as usize);
+            for chunk_sha in &manifest.chunks {
+                let chunk_raw = self.gh.get_blob(&self.owner, &self.repo, chunk_sha).await?;
+                out.extend(self.open(path, chunk_raw)?);
+            }
+            Ok(out)
+        } else {
+            self.open(path, raw)
+        }
     }
 }
 
@@ -390,5 +453,84 @@ mod tests {
 
         let bytes = engine.download("f.bin").await.unwrap();
         assert_eq!(bytes, b"hello enc");
+    }
+
+    #[tokio::test]
+    async fn upload_chunks_large_file_and_writes_manifest() {
+        let server = MockServer::start().await;
+        mount_upload(&server, "blob").await;
+        let gh = GitHubClient::new("tok", server.uri());
+        let pool = memory_pool().await;
+        // chunk_size = 4 -> "0123456789" (10 bytes) becomes 3 chunks + 1 manifest.
+        let engine = StorageEngine::new(gh, pool, "me", "drive", "main").with_chunk_size(4);
+
+        engine.upload("big.bin", b"0123456789").await.unwrap();
+
+        let reqs = server.received_requests().await.unwrap();
+        let blob_posts: Vec<_> = reqs
+            .iter()
+            .filter(|r| r.method.as_str() == "POST" && r.url.path().ends_with("/git/blobs"))
+            .collect();
+        assert_eq!(blob_posts.len(), 4, "3 chunks + 1 manifest");
+
+        // Find the manifest among the posted blobs.
+        let manifest = blob_posts.iter().find_map(|r| {
+            let body: serde_json::Value = serde_json::from_slice(&r.body).ok()?;
+            let content = nimbus_github::decode_blob(body["content"].as_str()?).ok()?;
+            if content.starts_with(MANIFEST_MAGIC) {
+                serde_json::from_slice::<Manifest>(&content[MANIFEST_MAGIC.len()..]).ok()
+            } else {
+                None
+            }
+        });
+        let manifest = manifest.expect("a manifest blob was posted");
+        assert_eq!(manifest.size, 10);
+        assert_eq!(manifest.chunks.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn download_reassembles_chunks_from_manifest() {
+        let server = MockServer::start().await;
+        let manifest = Manifest {
+            size: 6,
+            chunks: vec!["c0".into(), "c1".into()],
+        };
+        let mut manifest_blob = MANIFEST_MAGIC.to_vec();
+        manifest_blob.extend_from_slice(&serde_json::to_vec(&manifest).unwrap());
+
+        Mock::given(method("GET"))
+            .and(wpath("/repos/me/drive/git/blobs/man"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({ "content": nimbus_github::encode_blob(&manifest_blob) }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wpath("/repos/me/drive/git/blobs/c0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({ "content": nimbus_github::encode_blob(b"AAAA") }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wpath("/repos/me/drive/git/blobs/c1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({ "content": nimbus_github::encode_blob(b"BB") }),
+            ))
+            .mount(&server)
+            .await;
+
+        let pool = memory_pool().await;
+        sqlx::query(
+            "INSERT INTO cached_files (drive, path, kind, size, sha) VALUES ('me/drive','big.bin','file',6,'man')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let gh = GitHubClient::new("tok", server.uri());
+        let engine = StorageEngine::new(gh, pool, "me", "drive", "main");
+        let bytes = engine.download("big.bin").await.unwrap();
+        assert_eq!(bytes, b"AAAABB");
     }
 }

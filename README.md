@@ -88,6 +88,10 @@ Uploads are durable: each one creates a blob **and** a commit on the configured
 branch, so files survive GitHub's garbage collection. `GET /api/files` reads the
 fast local cache; `POST /api/sync` reconciles it with the repo's actual tree.
 
+Large files (over ~50 MB) are automatically split into chunk blobs plus a
+manifest, transparently bypassing GitHub's per-blob size limit; downloads
+reassemble them. Each chunk is encrypted independently when encryption is on.
+
 ## Architecture
 
 A Cargo workspace of focused crates:
