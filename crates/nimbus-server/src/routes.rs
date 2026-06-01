@@ -44,36 +44,53 @@ pub struct AppState {
 /// `Authorization: Bearer` header or `nimbus_token` cookie; otherwise open
 /// (intended for loopback-only dev — the server refuses to bind publicly
 /// without a token configured).
-async fn require_auth(
-    State(st): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let Some(expected) = &st.admin_token else {
-        return Ok(next.run(req).await);
-    };
-    let from_header = req
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .map(str::to_string);
-    let from_cookie = req
-        .headers()
+fn cookie_value(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    headers
         .get("cookie")
         .and_then(|v| v.to_str().ok())
         .and_then(|cookies| {
             cookies
                 .split(';')
-                .filter_map(|c| c.trim().strip_prefix("nimbus_token="))
+                .filter_map(|c| c.trim().strip_prefix(prefix.as_str()))
                 .next()
                 .map(str::to_string)
-        });
-    match from_header.or(from_cookie) {
-        // Constant-time-ish compare is overkill here; tokens are high-entropy.
-        Some(provided) if provided == *expected => Ok(next.run(req).await),
-        _ => Err(StatusCode::UNAUTHORIZED),
+        })
+}
+
+async fn require_auth(
+    State(st): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // 1. Admin token (Bearer header or nimbus_token cookie).
+    if let Some(expected) = &st.admin_token {
+        let from_header = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .map(str::to_string);
+        let from_cookie = cookie_value(req.headers(), "nimbus_token");
+        if from_header.or(from_cookie).as_deref() == Some(expected.as_str()) {
+            return Ok(next.run(req).await);
+        }
     }
+    // 2. A valid user session.
+    if let Some(sess) = cookie_value(req.headers(), "nimbus_session") {
+        if matches!(
+            crate::users::validate_session(&st.pool, &sess).await,
+            Ok(Some(_))
+        ) {
+            return Ok(next.run(req).await);
+        }
+    }
+    // 3. Open instance: no admin token and no accounts (loopback/dev).
+    let no_users = crate::users::user_count(&st.pool).await.unwrap_or(0) == 0;
+    if st.admin_token.is_none() && no_users {
+        return Ok(next.run(req).await);
+    }
+    Err(StatusCode::UNAUTHORIZED)
 }
 
 /// Largest file we attempt to index for semantic search (bytes).
@@ -108,10 +125,98 @@ pub fn router(state: AppState) -> Router {
             axum::routing::delete(revoke_share_link),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
-        // Public routes (added AFTER the auth layer): health + share download.
+        // Public routes (added AFTER the auth layer): health, login, share.
         .route("/healthz", get(healthz))
+        .route("/api/auth/login", post(login))
+        .route("/api/auth/logout", post(logout))
+        .route("/api/auth/register", post(register))
+        .route("/api/auth/me", get(me))
         .route("/s/*token", get(serve_share))
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct Credentials {
+    username: String,
+    password: String,
+}
+
+fn session_cookie(token: &str) -> String {
+    format!(
+        "nimbus_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
+        crate::users::SESSION_TTL_SECS
+    )
+}
+
+async fn login(
+    State(st): State<AppState>,
+    Json(cred): Json<Credentials>,
+) -> Result<Response, StatusCode> {
+    use axum::response::IntoResponse;
+    let ok = crate::users::verify_login(&st.pool, &cred.username, &cred.password)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !ok {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let token = crate::users::create_session(&st.pool, &cred.username)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((
+        [(axum::http::header::SET_COOKIE, session_cookie(&token))],
+        Json(json!({ "user": cred.username })),
+    )
+        .into_response())
+}
+
+async fn logout(State(st): State<AppState>, headers: axum::http::HeaderMap) -> Response {
+    use axum::response::IntoResponse;
+    if let Some(sess) = cookie_value(&headers, "nimbus_session") {
+        let _ = crate::users::delete_session(&st.pool, &sess).await;
+    }
+    (
+        [(
+            axum::http::header::SET_COOKIE,
+            "nimbus_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0".to_string(),
+        )],
+        StatusCode::NO_CONTENT,
+    )
+        .into_response()
+}
+
+/// Register the FIRST admin account (only allowed when no users exist yet).
+async fn register(
+    State(st): State<AppState>,
+    Json(cred): Json<Credentials>,
+) -> Result<Response, StatusCode> {
+    use axum::response::IntoResponse;
+    let count = crate::users::user_count(&st.pool).await.unwrap_or(1);
+    if count > 0 {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    crate::users::create_user(&st.pool, &cred.username, &cred.password)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let token = crate::users::create_session(&st.pool, &cred.username)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((
+        [(axum::http::header::SET_COOKIE, session_cookie(&token))],
+        Json(json!({ "user": cred.username })),
+    )
+        .into_response())
+}
+
+async fn me(State(st): State<AppState>, headers: axum::http::HeaderMap) -> Json<Value> {
+    let user = match cookie_value(&headers, "nimbus_session") {
+        Some(sess) => crate::users::validate_session(&st.pool, &sess)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let requires_login = crate::users::user_count(&st.pool).await.unwrap_or(0) > 0;
+    Json(json!({ "user": user, "requires_login": requires_login }))
 }
 
 /// Liveness/readiness probe for load balancers and uptime monitors.
@@ -682,6 +787,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn first_register_succeeds_then_forbidden() {
+        let server = MockServer::start().await;
+        let app = router(test_state(server.uri(), None).await);
+        let body = r#"{"username":"admin","password":"pw"}"#;
+        let mk = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+
+        let r1 = app.clone().oneshot(mk()).await.unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+        // Second registration is rejected once an account exists.
+        let r2 = app.oneshot(mk()).await.unwrap();
+        assert_eq!(r2.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

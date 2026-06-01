@@ -2,7 +2,7 @@ use nimbus_ai::{AiProvider, AnthropicProvider, ChatProvider, OllamaProvider, Ope
 use nimbus_crypto::Vault;
 use nimbus_github::GitHubClient;
 use nimbus_search::SearchIndex;
-use nimbus_server::{cache, config::Config, routes, routes::AppState, tokens, vault};
+use nimbus_server::{cache, config::Config, routes, routes::AppState, tokens, users, vault};
 use nimbus_storage::StorageEngine;
 use std::sync::Arc;
 
@@ -10,6 +10,14 @@ use std::sync::Arc;
 async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_lookup(|k| std::env::var(k).ok())?;
     let pool = cache::open(&cfg.database_url).await?;
+
+    // Seed the first admin account if configured and none exist yet.
+    if let (Some(user), Some(pass)) = (&cfg.admin_user, &cfg.admin_password) {
+        if users::user_count(&pool).await? == 0 {
+            users::create_user(&pool, user, pass).await?;
+            println!("nimbus: created admin account '{user}'");
+        }
+    }
     // Set up the vault first — it's needed to decrypt a stored token and is
     // shared with the request layer for encrypting newly obtained tokens.
     let vault: Option<Vault> = if let Some(passphrase) = &cfg.encryption_passphrase {

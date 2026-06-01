@@ -112,6 +112,25 @@ export async function devicePoll(deviceCode) {
   return r.json();
 }
 
+export async function authMe() {
+  const r = await apiFetch('/api/auth/me');
+  if (!r.ok) return { user: null, requires_login: false };
+  return r.json();
+}
+
+export async function login(username, password) {
+  const r = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  return r.ok;
+}
+
+export async function logout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+}
+
 export async function getUsage() {
   const r = await apiFetch('/api/usage');
   if (!r.ok) return null;
