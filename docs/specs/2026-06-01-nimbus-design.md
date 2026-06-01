@@ -74,9 +74,14 @@ Each module has one responsibility, a well-defined interface, and is independent
 - File `< 100 MB` → stored as a normal blob via the Git Data API.
 - File `≥ 100 MB` → **chunked**: split into parts plus a `manifest.json` linking them, transparently bypassing GitHub's per-file limit.
 - **Metadata** lives in a `.nimbus/` folder in the repo (file index, virtual folder tree). This makes a drive fully portable — any clone of the repo contains everything Nimbus needs.
-- **Optional client-side encryption** (AES-256-GCM): when enabled, GitHub only ever sees ciphertext. Keys are derived locally and never uploaded. This is the strongest privacy posture.
+- **Client-side encryption** (AES-256-GCM): GitHub only ever sees ciphertext. The encryption key is derived locally (Argon2id) from an encryption passphrase and is never uploaded.
 
-**Decision — encryption default:** client-side encryption is **opt-in** in v1 (off by default) to keep first-run UX simple, with a clear, prominent toggle in settings. Revisit defaulting-on after v1.
+**Decision — encryption default:** client-side encryption is **ON by default** for the strongest privacy posture. Implications:
+
+- At first run the user sets an **encryption passphrase**; the key is derived locally and held only in server memory while the instance runs.
+- A **recovery key** is generated and shown once at setup — losing both the passphrase and the recovery key means the data is unrecoverable (true zero-knowledge). This trade-off is stated explicitly in the UI.
+- File **previews** require decryption: the server decrypts in memory on demand (self-hosted trust model). **Semantic search** embeds plaintext locally *before* encryption, so the local vector index works normally; the index itself is encrypted at rest.
+- Power users may still disable encryption per-drive via a clear settings toggle.
 
 ---
 
@@ -116,7 +121,7 @@ Implementations: `AnthropicProvider`, `OpenAiProvider`, `GoogleProvider`, `Ollam
 3. Folders (navigate, create)
 4. Preview (images, text, markdown, PDF)
 5. **Semantic AI search** with the user's chosen provider
-6. Settings: choose AI provider + key/endpoint; toggle client-side encryption
+6. First-run setup: encryption passphrase + recovery key; choose AI provider + key/endpoint (encryption is ON by default, with a per-drive toggle to disable)
 
 **Deferred to v2+:** share links, desktop sync, multi-user/teams, the deploy/PaaS module.
 
