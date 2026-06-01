@@ -4,7 +4,7 @@ use serde::Deserialize;
 mod git_data;
 mod oauth;
 
-pub use git_data::{TreeChange, TreeFile};
+pub use git_data::{CommitInfo, TreeChange, TreeFile};
 pub use oauth::{poll_for_token, start_device_flow, DeviceCode, PollResult};
 
 use std::sync::Arc;

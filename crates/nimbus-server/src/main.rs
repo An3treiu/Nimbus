@@ -188,7 +188,9 @@ fn guard_bind(bind_addr: &str, auth_enabled: bool) -> anyhow::Result<()> {
         );
     }
     if !is_loopback {
-        eprintln!("nimbus: bound to {bind_addr} with auth enabled — ensure TLS via a reverse proxy.");
+        eprintln!(
+            "nimbus: bound to {bind_addr} with auth enabled — ensure TLS via a reverse proxy."
+        );
     }
     Ok(())
 }
