@@ -35,6 +35,8 @@ pub enum NimbusError {
     NotFound(String),
     #[error("storage error: {0}")]
     Storage(String),
+    #[error("ai error: {0}")]
+    Ai(String),
 }
 
 pub type Result<T> = std::result::Result<T, NimbusError>;

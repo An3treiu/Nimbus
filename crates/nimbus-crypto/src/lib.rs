@@ -11,7 +11,7 @@
 //! The plaintext and the DEK never leave the process. GitHub only ever sees
 //! ciphertext.
 
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use argon2::Argon2;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -62,13 +62,16 @@ pub fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], Crypto
     Ok(out)
 }
 
-/// Encrypt `plaintext` with `key`; output is `nonce || ciphertext+tag`.
-pub fn encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+/// Encrypt `plaintext` with `key` and authenticated associated data `aad`.
+/// Output is `nonce || ciphertext+tag`. The same `aad` must be supplied to
+/// decrypt — binding e.g. a file path here prevents ciphertext substitution
+/// across paths.
+pub fn encrypt_aad(key: &[u8; KEY_LEN], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce_bytes = random_array::<NONCE_LEN>();
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(nonce, Payload { msg: plaintext, aad })
         .map_err(|_| CryptoError::Encrypt)?;
     let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     out.extend_from_slice(&nonce_bytes);
@@ -76,16 +79,26 @@ pub fn encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>, CryptoE
     Ok(out)
 }
 
-/// Decrypt data produced by [`encrypt`].
-pub fn decrypt(key: &[u8; KEY_LEN], data: &[u8]) -> Result<Vec<u8>, CryptoError> {
+/// Decrypt data produced by [`encrypt_aad`] with the same `aad`.
+pub fn decrypt_aad(key: &[u8; KEY_LEN], data: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     if data.len() < NONCE_LEN {
         return Err(CryptoError::Length);
     }
     let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     cipher
-        .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+        .decrypt(Nonce::from_slice(nonce_bytes), Payload { msg: ciphertext, aad })
         .map_err(|_| CryptoError::Decrypt)
+}
+
+/// Encrypt with no associated data (used for key wrapping).
+pub fn encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    encrypt_aad(key, plaintext, &[])
+}
+
+/// Decrypt data produced by [`encrypt`].
+pub fn decrypt(key: &[u8; KEY_LEN], data: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    decrypt_aad(key, data, &[])
 }
 
 /// Wrap (encrypt) a DEK under a key-encryption key.
@@ -124,14 +137,15 @@ impl Vault {
         Self { dek }
     }
 
-    /// Encrypt file bytes for storage.
-    pub fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        encrypt(&self.dek, plaintext)
+    /// Encrypt file bytes for storage, binding `context` (e.g. the file path)
+    /// as associated data so the ciphertext cannot be replayed under another path.
+    pub fn seal(&self, context: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        encrypt_aad(&self.dek, plaintext, context)
     }
 
-    /// Decrypt file bytes read from storage.
-    pub fn open(&self, ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        decrypt(&self.dek, ciphertext)
+    /// Decrypt file bytes read from storage; `context` must match what was sealed.
+    pub fn open(&self, context: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        decrypt_aad(&self.dek, ciphertext, context)
     }
 }
 
@@ -236,8 +250,19 @@ mod tests {
     #[test]
     fn vault_seal_open_round_trip() {
         let vault = Vault::new(generate_key());
-        let sealed = vault.seal(b"file contents").unwrap();
+        let sealed = vault.seal(b"docs/a.txt", b"file contents").unwrap();
         assert_ne!(sealed, b"file contents");
-        assert_eq!(vault.open(&sealed).unwrap(), b"file contents");
+        assert_eq!(vault.open(b"docs/a.txt", &sealed).unwrap(), b"file contents");
+    }
+
+    #[test]
+    fn vault_rejects_wrong_context() {
+        let vault = Vault::new(generate_key());
+        let sealed = vault.seal(b"docs/a.txt", b"secret").unwrap();
+        // Same key, but a different path as AAD -> authentication fails.
+        assert_eq!(
+            vault.open(b"docs/evil.txt", &sealed).unwrap_err(),
+            CryptoError::Decrypt
+        );
     }
 }
