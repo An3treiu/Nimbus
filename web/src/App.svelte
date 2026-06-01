@@ -5,7 +5,7 @@
     search, chatWithFiles, fetchText, previewKind, formatSize,
     authStatus, deviceStart, devicePoll,
     listTrash, restoreTrash, fileHistory, restoreVersion, createShare, getUsage,
-    authMe, login, logout,
+    authMe, login, logout, listActivity,
   } from './api.js';
 
   // ---- Core state ----
@@ -29,6 +29,9 @@
 
   // ---- Trash ----
   let trash = $state([]);
+
+  // ---- Activity feed ----
+  let activity = $state([]);
 
   // ---- Overlays ----
   let preview = $state(null);
@@ -90,7 +93,7 @@
     else if (e.key === 'Escape') { paletteOpen = false; preview = null; shareModal = null; historyPanel = null; }
   }
 
-  function setView(v) { view = v; status = ''; results = null; if (v === 'trash') loadTrash(); if (v === 'drive') refresh(); }
+  function setView(v) { view = v; status = ''; results = null; if (v === 'trash') loadTrash(); if (v === 'activity') loadActivity(); if (v === 'drive') refresh(); }
   function setViewMode(m) { viewMode = m; localStorage.setItem('nimbus_view', m); }
   function toggleTheme() { theme = theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('nimbus_theme', theme); }
 
@@ -211,6 +214,20 @@
     catch (e) { status = e.message; } finally { busy = false; }
   }
 
+  async function loadActivity() {
+    try { activity = await listActivity(100); } catch (e) { status = e.message; }
+  }
+  const ACTIVITY_META = {
+    upload: { icon: '⬆️', verb: 'Uploaded' },
+    delete: { icon: '❌', verb: 'Deleted' },
+    trash: { icon: '🗑️', verb: 'Trashed' },
+    untrash: { icon: '♻️', verb: 'Restored from Trash' },
+    move: { icon: '➡️', verb: 'Moved' },
+    restore: { icon: '🕰️', verb: 'Restored version of' },
+    other: { icon: '•', verb: '' },
+  };
+  function activityMeta(a) { return ACTIVITY_META[a] || ACTIVITY_META.other; }
+
   function togglePalette() { paletteOpen = !paletteOpen; paletteQuery = ''; }
   const paletteResults = $derived(
     paletteQuery
@@ -259,6 +276,7 @@
     <nav>
       <button class:active={view === 'drive'} onclick={() => setView('drive')}><span class="ic">📁</span>{#if sidebarOpen}Drive{/if}</button>
       <button class:active={view === 'chat'} onclick={() => setView('chat')}><span class="ic">💬</span>{#if sidebarOpen}Chat{/if}</button>
+      <button class:active={view === 'activity'} onclick={() => setView('activity')}><span class="ic">📜</span>{#if sidebarOpen}Activity{/if}</button>
       <button class:active={view === 'trash'} onclick={() => setView('trash')}><span class="ic">🗑️</span>{#if sidebarOpen}Trash{/if}</button>
     </nav>
     {#if sidebarOpen && usage}
@@ -374,6 +392,29 @@
           {#each trash as t}
             <li><span class="name">📄 {t.original_path}</span>
               <button class="ghost sm" onclick={() => restoreFromTrash(t)}>Restore</button></li>
+          {/each}
+        </ul>
+      {:else if view === 'activity'}
+        <p class="muted" style="margin:0 0 .6rem">Every change is a Git commit — this is your tamper-evident audit trail.</p>
+        {#if activity.length === 0}<div class="empty-state"><div class="big">📜</div><p>No activity yet.</p></div>{/if}
+        <ul class="rows">
+          {#each activity as a}
+            <li>
+              <span class="name">
+                {activityMeta(a.action).icon}
+                {#if a.action === 'other'}
+                  {a.message}
+                {:else}
+                  {activityMeta(a.action).verb}
+                  {#if a.from && (a.action === 'move')}<strong>{basename(a.from)}</strong> →{/if}
+                  <strong>{basename(a.path) || a.path}</strong>
+                {/if}
+                <br /><span class="muted">{a.date.slice(0, 10)} · {a.sha.slice(0, 7)}</span>
+              </span>
+              {#if a.action !== 'other' && a.action !== 'delete' && a.path}
+                <button class="ghost sm" onclick={() => openPreview(a.path)}>Open</button>
+              {/if}
+            </li>
           {/each}
         </ul>
       {:else if view === 'chat'}

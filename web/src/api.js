@@ -167,6 +167,13 @@ export async function restoreVersion(path, commit) {
   if (!r.ok) throw new Error(`restore version failed (${r.status})`);
 }
 
+// Drive-wide activity feed (parsed Git history). Returns an array of events.
+export async function listActivity(limit = 50) {
+  const r = await apiFetch(`/api/activity?limit=${limit}`);
+  if (!r.ok) throw new Error(`activity failed (${r.status})`);
+  return r.json();
+}
+
 export async function createShare(path, password, expiresInSecs) {
   const body = { path };
   if (password) body.password = password;

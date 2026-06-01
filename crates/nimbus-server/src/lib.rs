@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod assets;
 pub mod cache;
 pub mod config;

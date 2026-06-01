@@ -465,6 +465,15 @@ impl StorageEngine {
             .await
     }
 
+    /// The drive-wide commit history on the branch (newest first), capped at
+    /// `limit`. Powers the activity feed. Unlike [`history`](Self::history) this
+    /// is not filtered to a single path.
+    pub async fn activity(&self, limit: u32) -> Result<Vec<nimbus_github::CommitInfo>> {
+        self.gh
+            .list_branch_commits(&self.owner, &self.repo, &self.branch, limit)
+            .await
+    }
+
     /// Restore `path` to the version it had at `commit_sha` (a new commit that
     /// re-points the path to the historical blob). Works with encryption since
     /// the path — and thus the AAD — is unchanged.
