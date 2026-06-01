@@ -18,6 +18,8 @@ pub struct Config {
     pub ai_base_url: Option<String>,
     pub ai_api_key: Option<String>,
     pub ai_model: Option<String>,
+    /// Directory of built static frontend assets to serve.
+    pub web_dir: String,
 }
 
 impl Config {
@@ -39,6 +41,7 @@ impl Config {
             ai_base_url: get("NIMBUS_AI_BASE_URL").filter(|s| !s.is_empty()),
             ai_api_key: get("NIMBUS_AI_API_KEY").filter(|s| !s.is_empty()),
             ai_model: get("NIMBUS_AI_MODEL").filter(|s| !s.is_empty()),
+            web_dir: get("NIMBUS_WEB_DIR").unwrap_or_else(|| "web/dist".into()),
         })
     }
 }

@@ -31,6 +31,21 @@ cargo run --release
 # -> nimbus listening on http://127.0.0.1:8080
 ```
 
+## Web UI
+
+Nimbus ships a Svelte web UI (file browser, drag-and-drop upload, download,
+semantic search). Build it once, and the server serves it on the same port:
+
+```bash
+cd web && npm install && npm run build && cd ..
+cargo run --release
+# open http://127.0.0.1:8080
+```
+
+For frontend development with hot reload: `cd web && npm run dev` (Vite proxies
+`/api` to the Rust server on :8080). Override the served directory with
+`NIMBUS_WEB_DIR`.
+
 ## Encryption (zero-knowledge)
 
 Set `NIMBUS_ENCRYPTION_PASSPHRASE` to encrypt every file client-side with

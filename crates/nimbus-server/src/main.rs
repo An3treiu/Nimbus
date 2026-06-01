@@ -44,7 +44,10 @@ async fn main() -> anyhow::Result<()> {
         engine: Arc::new(engine),
         search,
     };
-    let app = routes::router(state);
+    // API routes, with the built frontend served as a fallback (same origin).
+    let app = routes::router(state)
+        .fallback_service(tower_http::services::ServeDir::new(&cfg.web_dir));
+    println!("nimbus: serving UI from {}", cfg.web_dir);
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr).await?;
     println!("nimbus listening on http://{}", cfg.bind_addr);
