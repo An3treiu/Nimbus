@@ -58,7 +58,12 @@ mod tests {
 
     #[test]
     fn name_handles_root_level_file() {
-        let f = DriveFile { path: "readme.txt".into(), kind: FileKind::File, size: 1, sha: None };
+        let f = DriveFile {
+            path: "readme.txt".into(),
+            kind: FileKind::File,
+            size: 1,
+            sha: None,
+        };
         assert_eq!(f.name(), "readme.txt");
     }
 }

@@ -27,11 +27,10 @@ pub async fn unlock_or_init(
     passphrase: &str,
     recovery_key: Option<&str>,
 ) -> anyhow::Result<VaultSetup> {
-    let existing: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = sqlx::query_as(
-        "SELECT salt, wrapped_dek, wrapped_dek_recovery FROM vault WHERE id = 1",
-    )
-    .fetch_optional(pool)
-    .await?;
+    let existing: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> =
+        sqlx::query_as("SELECT salt, wrapped_dek, wrapped_dek_recovery FROM vault WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
 
     if let Some((salt, wrapped_dek, wrapped_rec)) = existing {
         // Recovery path: unwrap the DEK with the supplied recovery key.
@@ -59,16 +58,19 @@ pub async fn unlock_or_init(
     let salt = generate_salt();
     let dek = generate_key();
     let recovery = generate_key();
-    let kek = derive_key(passphrase, &salt).map_err(|e| anyhow::anyhow!("key derivation failed: {e}"))?;
+    let kek =
+        derive_key(passphrase, &salt).map_err(|e| anyhow::anyhow!("key derivation failed: {e}"))?;
     let wrapped_dek = wrap_key(&kek, &dek).map_err(|e| anyhow::anyhow!("wrap failed: {e}"))?;
     let wrapped_rec = wrap_key(&recovery, &dek).map_err(|e| anyhow::anyhow!("wrap failed: {e}"))?;
 
-    sqlx::query("INSERT INTO vault (id, salt, wrapped_dek, wrapped_dek_recovery) VALUES (1, ?, ?, ?)")
-        .bind(salt.as_slice())
-        .bind(wrapped_dek.as_slice())
-        .bind(wrapped_rec.as_slice())
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO vault (id, salt, wrapped_dek, wrapped_dek_recovery) VALUES (1, ?, ?, ?)",
+    )
+    .bind(salt.as_slice())
+    .bind(wrapped_dek.as_slice())
+    .bind(wrapped_rec.as_slice())
+    .execute(pool)
+    .await?;
 
     Ok(VaultSetup {
         vault: Vault::new(dek),
@@ -95,7 +97,10 @@ mod tests {
         let pool = memory_pool().await;
 
         let first = unlock_or_init(&pool, "hunter2", None).await.unwrap();
-        assert!(first.new_recovery_key.is_some(), "first run yields a recovery key");
+        assert!(
+            first.new_recovery_key.is_some(),
+            "first run yields a recovery key"
+        );
         let sealed = first.vault.seal(b"ctx", b"data").unwrap();
 
         // Re-unlock with the same passphrase: no new recovery key, same DEK.
@@ -122,7 +127,9 @@ mod tests {
         let sealed = first.vault.seal(b"ctx", b"important").unwrap();
 
         // Passphrase forgotten — unlock with the recovery key instead.
-        let recovered = unlock_or_init(&pool, "totally-wrong", Some(&recovery)).await.unwrap();
+        let recovered = unlock_or_init(&pool, "totally-wrong", Some(&recovery))
+            .await
+            .unwrap();
         assert_eq!(recovered.vault.open(b"ctx", &sealed).unwrap(), b"important");
     }
 

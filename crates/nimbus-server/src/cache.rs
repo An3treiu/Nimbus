@@ -8,7 +8,10 @@ use sqlx::SqlitePool;
 /// so a multi-connection pool would migrate one and query another (empty) one.
 pub async fn open(url: &str) -> anyhow::Result<SqlitePool> {
     let max = if url.contains(":memory:") { 1 } else { 5 };
-    let pool = SqlitePoolOptions::new().max_connections(max).connect(url).await?;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(max)
+        .connect(url)
+        .await?;
     sqlx::migrate!("../../migrations").run(&pool).await?;
     Ok(pool)
 }

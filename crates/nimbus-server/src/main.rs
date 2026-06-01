@@ -1,7 +1,7 @@
-use nimbus_ai::{AiProvider, OllamaProvider, OpenAiProvider};
+use nimbus_ai::{AiProvider, AnthropicProvider, ChatProvider, OllamaProvider, OpenAiProvider};
 use nimbus_github::GitHubClient;
 use nimbus_search::SearchIndex;
-use nimbus_server::{cache, config::Config, routes, routes::AppState, vault};
+use nimbus_server::{cache, config::Config, routes, routes::AppState, tokens, vault};
 use nimbus_storage::StorageEngine;
 use std::sync::Arc;
 
@@ -9,7 +9,18 @@ use std::sync::Arc;
 async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_lookup(|k| std::env::var(k).ok())?;
     let pool = cache::open(&cfg.database_url).await?;
-    let gh = GitHubClient::new(cfg.github_token.clone(), "https://api.github.com".to_string());
+    // Token precedence: env PAT, else a previously stored OAuth token, else empty
+    // (the user can then connect via the in-app device flow).
+    let initial_token = match &cfg.github_token {
+        Some(t) => t.clone(),
+        None => tokens::load_token(&pool).await?.unwrap_or_default(),
+    };
+    if initial_token.is_empty() {
+        println!(
+            "nimbus: no GitHub token yet — connect via the UI (needs NIMBUS_GITHUB_CLIENT_ID)"
+        );
+    }
+    let gh = GitHubClient::new(initial_token, "https://api.github.com".to_string());
 
     let mut engine = StorageEngine::new(
         gh,
@@ -30,24 +41,42 @@ async fn main() -> anyhow::Result<()> {
         println!("nimbus: encryption DISABLED (set NIMBUS_ENCRYPTION_PASSPHRASE to enable)");
     }
 
-    // Optional AI provider for semantic search.
-    let provider = build_ai_provider(&cfg);
-    let search = provider.map(|p| {
+    // Optional embedding provider drives semantic search.
+    let embed_provider = build_embed_provider(&cfg);
+    let search = embed_provider.map(|p| {
         println!("nimbus: semantic search ENABLED");
         Arc::new(SearchIndex::new(pool.clone(), p))
     });
     if search.is_none() {
-        println!("nimbus: semantic search DISABLED (set NIMBUS_AI_PROVIDER to enable)");
+        println!("nimbus: semantic search DISABLED (set NIMBUS_AI_PROVIDER to openai/ollama)");
+    }
+
+    // Optional chat provider drives "chat with your files".
+    let chat = build_chat_provider(&cfg);
+    if chat.is_some() {
+        println!("nimbus: chat ENABLED");
+    } else {
+        println!("nimbus: chat DISABLED (set NIMBUS_AI_PROVIDER to openai/ollama/anthropic)");
     }
 
     let state = AppState {
         engine: Arc::new(engine),
         search,
+        chat,
+        pool: pool.clone(),
+        github_client_id: cfg.github_client_id.clone(),
     };
-    // API routes, with the built frontend served as a fallback (same origin).
-    let app = routes::router(state)
-        .fallback_service(tower_http::services::ServeDir::new(&cfg.web_dir));
-    println!("nimbus: serving UI from {}", cfg.web_dir);
+    // API routes, with the frontend served as a fallback (same origin).
+    let app = match &cfg.web_dir {
+        Some(dir) => {
+            println!("nimbus: serving UI from directory {dir}");
+            routes::router(state).fallback_service(tower_http::services::ServeDir::new(dir))
+        }
+        None => {
+            println!("nimbus: serving embedded UI");
+            routes::router(state).fallback(nimbus_server::assets::static_handler)
+        }
+    };
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr).await?;
     println!("nimbus listening on http://{}", cfg.bind_addr);
@@ -55,8 +84,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build the configured AI provider, or `None` if AI is disabled.
-fn build_ai_provider(cfg: &Config) -> Option<Arc<dyn AiProvider>> {
+/// Build the embedding provider for semantic search, or `None`.
+/// Anthropic has no embeddings API, so only openai/ollama qualify.
+fn build_embed_provider(cfg: &Config) -> Option<Arc<dyn AiProvider>> {
     match cfg.ai_provider.as_deref() {
         Some("openai") => {
             let base = cfg
@@ -85,13 +115,54 @@ fn build_ai_provider(cfg: &Config) -> Option<Arc<dyn AiProvider>> {
     }
 }
 
+/// Build the chat provider for "chat with your files", or `None`.
+fn build_chat_provider(cfg: &Config) -> Option<Arc<dyn ChatProvider>> {
+    match cfg.ai_provider.as_deref() {
+        Some("openai") => {
+            let base = cfg
+                .ai_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".into());
+            let key = cfg.ai_api_key.clone().unwrap_or_default();
+            let model = cfg
+                .ai_chat_model
+                .clone()
+                .unwrap_or_else(|| "gpt-4o-mini".into());
+            Some(Arc::new(OpenAiProvider::new(base, key, model)))
+        }
+        Some("ollama") => {
+            let base = cfg
+                .ai_base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:11434".into());
+            let model = cfg.ai_chat_model.clone().unwrap_or_else(|| "llama3".into());
+            Some(Arc::new(OllamaProvider::new(base, model)))
+        }
+        Some("anthropic") => {
+            let base = cfg
+                .ai_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.anthropic.com".into());
+            let key = cfg.ai_api_key.clone().unwrap_or_default();
+            let model = cfg
+                .ai_chat_model
+                .clone()
+                .unwrap_or_else(|| "claude-opus-4-8".into());
+            Some(Arc::new(AnthropicProvider::new(base, key, model)))
+        }
+        _ => None,
+    }
+}
+
 /// Emit the one-time recovery key. Prefer writing to a file (so it doesn't end
 /// up in aggregated server logs); fall back to stdout with a clear warning.
 /// This is the only time the key is ever shown.
 fn emit_recovery_key(recovery: &str, out_path: Option<&str>) -> anyhow::Result<()> {
     if let Some(path) = out_path {
         std::fs::write(path, format!("{recovery}\n"))?;
-        println!("nimbus: recovery key written to {path} — store it safely, then delete it from disk.");
+        println!(
+            "nimbus: recovery key written to {path} — store it safely, then delete it from disk."
+        );
         return Ok(());
     }
     eprintln!("\n========================================================");

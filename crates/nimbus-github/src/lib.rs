@@ -2,8 +2,12 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 
 mod git_data;
+mod oauth;
 
 pub use git_data::TreeFile;
+pub use oauth::{poll_for_token, start_device_flow, DeviceCode, PollResult};
+
+use std::sync::Arc;
 
 /// Encode raw bytes the way GitHub's create-blob endpoint expects.
 pub fn encode_blob(bytes: &[u8]) -> String {
@@ -18,8 +22,11 @@ pub fn decode_blob(content: &str) -> Result<Vec<u8>, base64::DecodeError> {
 }
 
 /// A thin client over GitHub's Git Data API.
+///
+/// The token is stored in an `ArcSwap` so it can be replaced at runtime (e.g.
+/// after an OAuth device-flow login) without rebuilding the client.
 pub struct GitHubClient {
-    token: String,
+    token: arc_swap::ArcSwap<String>,
     base_url: String,
     http: reqwest::Client,
 }
@@ -34,17 +41,27 @@ impl GitHubClient {
     /// a mock server URL in tests).
     pub fn new(token: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
-            token: token.into(),
+            token: arc_swap::ArcSwap::from_pointee(token.into()),
             base_url: base_url.into(),
             http: reqwest::Client::new(),
         }
+    }
+
+    /// Replace the access token at runtime (e.g. after OAuth login).
+    pub fn set_token(&self, token: impl Into<String>) {
+        self.token.store(Arc::new(token.into()));
+    }
+
+    /// The current bearer token value.
+    fn bearer(&self) -> String {
+        self.token.load().as_str().to_string()
     }
 
     /// Build a `GET` request with auth + user-agent headers preset.
     pub(crate) fn get(&self, url: &str) -> reqwest::RequestBuilder {
         self.http
             .get(url)
-            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Authorization", format!("Bearer {}", self.bearer()))
             .header("User-Agent", "nimbus")
     }
 
@@ -52,7 +69,7 @@ impl GitHubClient {
     pub(crate) fn post(&self, url: &str) -> reqwest::RequestBuilder {
         self.http
             .post(url)
-            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Authorization", format!("Bearer {}", self.bearer()))
             .header("User-Agent", "nimbus")
     }
 
@@ -60,7 +77,7 @@ impl GitHubClient {
     pub(crate) fn patch(&self, url: &str) -> reqwest::RequestBuilder {
         self.http
             .patch(url)
-            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Authorization", format!("Bearer {}", self.bearer()))
             .header("User-Agent", "nimbus")
     }
 
@@ -70,13 +87,18 @@ impl GitHubClient {
     }
 
     /// Fetch and decode a blob's raw bytes by SHA.
-    pub async fn get_blob(&self, owner: &str, repo: &str, sha: &str) -> nimbus_core::Result<Vec<u8>> {
-        let url = format!("{}/repos/{}/{}/git/blobs/{}", self.base_url, owner, repo, sha);
+    pub async fn get_blob(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> nimbus_core::Result<Vec<u8>> {
+        let url = format!(
+            "{}/repos/{}/{}/git/blobs/{}",
+            self.base_url, owner, repo, sha
+        );
         let resp = self
-            .http
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("User-Agent", "nimbus")
             .send()
             .await
             .map_err(|e| nimbus_core::NimbusError::GitHub(e.to_string()))?;
@@ -95,13 +117,15 @@ impl GitHubClient {
     }
 
     /// Create a blob from raw bytes, returning its SHA.
-    pub async fn create_blob(&self, owner: &str, repo: &str, bytes: &[u8]) -> nimbus_core::Result<String> {
+    pub async fn create_blob(
+        &self,
+        owner: &str,
+        repo: &str,
+        bytes: &[u8],
+    ) -> nimbus_core::Result<String> {
         let url = format!("{}/repos/{}/{}/git/blobs", self.base_url, owner, repo);
         let resp = self
-            .http
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("User-Agent", "nimbus")
             .json(&serde_json::json!({
                 "content": encode_blob(bytes),
                 "encoding": "base64"
@@ -199,7 +223,10 @@ mod http_tests {
             .mount(&server)
             .await;
         let client = GitHubClient::new("tok", server.uri());
-        let sha = client.create_blob("me", "drive", b"new file").await.unwrap();
+        let sha = client
+            .create_blob("me", "drive", b"new file")
+            .await
+            .unwrap();
         assert_eq!(sha, "deadbeef");
     }
 }
