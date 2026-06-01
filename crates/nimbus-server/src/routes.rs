@@ -101,15 +101,100 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/device/start", post(auth_device_start))
         .route("/api/auth/device/poll", post(auth_device_poll))
+        .route("/api/share", post(create_share_link))
+        .route(
+            "/api/share/*token",
+            axum::routing::delete(revoke_share_link),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
-        // Public, unauthenticated health check (added after the auth layer).
+        // Public routes (added AFTER the auth layer): health + share download.
         .route("/healthz", get(healthz))
+        .route("/s/*token", get(serve_share))
         .with_state(state)
 }
 
 /// Liveness/readiness probe for load balancers and uptime monitors.
 async fn healthz() -> &'static str {
     "ok"
+}
+
+#[derive(Deserialize)]
+struct ShareLinkRequest {
+    path: String,
+    password: Option<String>,
+    expires_in_secs: Option<i64>,
+}
+
+async fn create_share_link(
+    State(st): State<AppState>,
+    Json(req): Json<ShareLinkRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let expires_at = req.expires_in_secs.map(|secs| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        now + secs
+    });
+    let token = crate::shares::create_share(
+        &st.pool,
+        &st.engine.drive_id(),
+        &req.path,
+        req.password.as_deref(),
+        expires_at,
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        json!({ "token": token, "url": format!("/s/{token}") }),
+    ))
+}
+
+async fn revoke_share_link(
+    State(st): State<AppState>,
+    Path(token): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    crate::shares::revoke_share(&st.pool, &token)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Deserialize)]
+struct ShareQuery {
+    pw: Option<String>,
+}
+
+/// Public endpoint serving a shared file (after checking expiry + password).
+async fn serve_share(
+    State(st): State<AppState>,
+    Path(token): Path<String>,
+    Query(q): Query<ShareQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    use crate::shares::ShareError;
+    use axum::response::IntoResponse;
+    let path = match crate::shares::resolve_share(&st.pool, &token, q.pw.as_deref()).await {
+        Ok(p) => p,
+        Err(ShareError::PasswordRequired) => return Err(StatusCode::UNAUTHORIZED),
+        Err(ShareError::BadPassword) => return Err(StatusCode::FORBIDDEN),
+        Err(ShareError::Expired) => return Err(StatusCode::GONE),
+        Err(ShareError::NotFound) => return Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    let bytes = st
+        .engine
+        .download(&path)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+    Ok((
+        [(
+            axum::http::header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{name}\""),
+        )],
+        bytes,
+    )
+        .into_response())
 }
 
 /// Report whether in-app GitHub login (device flow) is available.
