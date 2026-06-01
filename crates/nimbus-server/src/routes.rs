@@ -46,7 +46,11 @@ const CHAT_EXCERPT_CHARS: usize = 2000;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/files", get(list_files))
-        .route("/api/files/*path", get(download_file).post(upload_file))
+        .route(
+            "/api/files/*path",
+            get(download_file).post(upload_file).delete(delete_file),
+        )
+        .route("/api/move", post(move_file))
         .route("/api/sync", post(sync_drive))
         .route("/api/search", get(search_files))
         .route("/api/chat", post(chat))
@@ -124,12 +128,56 @@ async fn accept_token(st: &AppState, token: String) -> Value {
     }
 }
 
-async fn list_files(State(st): State<AppState>) -> Result<Json<Vec<DriveFile>>, StatusCode> {
-    st.engine
-        .list()
-        .await
+#[derive(Deserialize)]
+struct ListParams {
+    /// When present, list the immediate children under this folder prefix.
+    prefix: Option<String>,
+}
+
+async fn list_files(
+    State(st): State<AppState>,
+    Query(params): Query<ListParams>,
+) -> Result<Json<Vec<DriveFile>>, StatusCode> {
+    let result = match params.prefix {
+        Some(prefix) => st.engine.list_dir(&prefix).await,
+        None => st.engine.list().await,
+    };
+    result
         .map(Json)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn delete_file(
+    State(st): State<AppState>,
+    Path(path): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    match st.engine.delete(&path).await {
+        Ok(()) => {
+            if let Some(search) = &st.search {
+                let _ = search.remove(&st.engine.drive_id(), &path).await;
+            }
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(nimbus_core::NimbusError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::BAD_GATEWAY),
+    }
+}
+
+#[derive(Deserialize)]
+struct MoveRequest {
+    from: String,
+    to: String,
+}
+
+async fn move_file(
+    State(st): State<AppState>,
+    Json(req): Json<MoveRequest>,
+) -> Result<StatusCode, StatusCode> {
+    match st.engine.move_file(&req.from, &req.to).await {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(nimbus_core::NimbusError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::BAD_GATEWAY),
+    }
 }
 
 async fn upload_file(

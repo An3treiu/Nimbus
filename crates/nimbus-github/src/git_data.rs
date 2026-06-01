@@ -17,6 +17,14 @@ pub struct TreeFile {
     pub size: u64,
 }
 
+/// A single change to apply to a tree: add/update a blob (`Some(sha)`) or
+/// delete the entry at `path` (`None`).
+#[derive(Debug, Clone)]
+pub struct TreeChange {
+    pub path: String,
+    pub blob_sha: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct RefObject {
     object: ShaHolder,
@@ -208,6 +216,58 @@ impl GitHubClient {
         }
     }
 
+    /// Create a tree applying several add/update/delete changes on top of `base_tree`.
+    async fn create_tree_multi(
+        &self,
+        owner: &str,
+        repo: &str,
+        base_tree: &str,
+        changes: &[TreeChange],
+    ) -> Result<String> {
+        let url = format!("{}/git/trees", self.repo_url(owner, repo));
+        let entries: Vec<serde_json::Value> = changes
+            .iter()
+            .map(|c| match &c.blob_sha {
+                Some(sha) => serde_json::json!({
+                    "path": c.path, "mode": "100644", "type": "blob", "sha": sha
+                }),
+                // A null sha removes the entry from the resulting tree.
+                None => serde_json::json!({
+                    "path": c.path, "mode": "100644", "type": "blob", "sha": serde_json::Value::Null
+                }),
+            })
+            .collect();
+        let payload = serde_json::json!({ "base_tree": base_tree, "tree": entries });
+        let body: ShaHolder =
+            json_or_err(self.post(&url).json(&payload), "create_tree_multi").await?;
+        Ok(body.sha)
+    }
+
+    /// Apply a batch of tree changes (add/update/delete) as one commit on `branch`.
+    /// Returns the new commit SHA. The branch must already exist.
+    pub async fn commit_changes(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        changes: &[TreeChange],
+        message: &str,
+    ) -> Result<String> {
+        let head = self
+            .get_branch_head(owner, repo, branch)
+            .await?
+            .ok_or_else(|| NimbusError::GitHub(format!("branch {branch} does not exist")))?;
+        let base_tree = self.get_commit_tree(owner, repo, &head).await?;
+        let tree = self
+            .create_tree_multi(owner, repo, &base_tree, changes)
+            .await?;
+        let commit = self
+            .create_commit(owner, repo, message, &tree, &[head])
+            .await?;
+        self.update_branch(owner, repo, branch, &commit).await?;
+        Ok(commit)
+    }
+
     /// List all blob entries on `branch` (recursive). Empty if the branch is missing.
     pub async fn list_tree(&self, owner: &str, repo: &str, branch: &str) -> Result<Vec<TreeFile>> {
         let head = match self.get_branch_head(owner, repo, branch).await? {
@@ -384,6 +444,59 @@ mod tests {
                 size: 3
             }
         );
+    }
+
+    #[tokio::test]
+    async fn commit_changes_applies_delete_and_add() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/me/drive/git/ref/heads/main"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "object": { "sha": "h" } })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/me/drive/git/commits/h"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "tree": { "sha": "bt" } })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/me/drive/git/trees"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "sha": "nt" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/me/drive/git/commits"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "sha": "nc" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/me/drive/git/refs/heads/main"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "ref": "refs/heads/main" })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = GitHubClient::new("tok", server.uri());
+        let changes = vec![
+            TreeChange {
+                path: "old.txt".into(),
+                blob_sha: None,
+            },
+            TreeChange {
+                path: "new.txt".into(),
+                blob_sha: Some("b2".into()),
+            },
+        ];
+        let commit = client
+            .commit_changes("me", "drive", "main", &changes, "move")
+            .await
+            .unwrap();
+        assert_eq!(commit, "nc");
     }
 
     #[tokio::test]
