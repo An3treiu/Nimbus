@@ -13,6 +13,25 @@ const DEFAULT_CHUNK_SIZE: usize = 50 * 1024 * 1024;
 /// a regular file. Chosen to be vanishingly unlikely to start a real file.
 const MANIFEST_MAGIC: &[u8] = b"NIMBUSv1CHUNKED\n";
 
+/// Path prefix under which trashed files live in the repo.
+const TRASH_PREFIX: &str = ".nimbus-trash/";
+
+/// A trashed file: where it now lives, where it came from, and when it was deleted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TrashEntry {
+    pub trash_path: String,
+    pub original_path: String,
+    pub deleted_at: i64,
+}
+
+/// Current unix time in seconds (0 if the clock is before the epoch).
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Describes a large file split across multiple chunk blobs.
 #[derive(Serialize, Deserialize)]
 struct Manifest {
@@ -208,9 +227,11 @@ impl StorageEngine {
     /// List cached files for this drive, sorted by path.
     pub async fn list(&self) -> Result<Vec<DriveFile>> {
         let rows: Vec<(String, String, i64, Option<String>)> = sqlx::query_as(
-            "SELECT path, kind, size, sha FROM cached_files WHERE drive = ? ORDER BY path",
+            "SELECT path, kind, size, sha FROM cached_files WHERE drive = ? \
+             AND path NOT LIKE ? ORDER BY path",
         )
         .bind(self.drive_key())
+        .bind(format!("{TRASH_PREFIX}%"))
         .fetch_all(&self.pool)
         .await
         .map_err(|e| NimbusError::Storage(e.to_string()))?;
@@ -359,10 +380,12 @@ impl StorageEngine {
             format!("{prefix}/")
         };
         let rows: Vec<(String, i64, Option<String>)> = sqlx::query_as(
-            "SELECT path, size, sha FROM cached_files WHERE drive = ? AND path LIKE ? ORDER BY path",
+            "SELECT path, size, sha FROM cached_files WHERE drive = ? AND path LIKE ? \
+             AND path NOT LIKE ? ORDER BY path",
         )
         .bind(self.drive_key())
         .bind(format!("{norm}%"))
+        .bind(format!("{TRASH_PREFIX}%"))
         .fetch_all(&self.pool)
         .await
         .map_err(|e| NimbusError::Storage(e.to_string()))?;
@@ -397,6 +420,131 @@ impl StorageEngine {
             .collect();
         out.extend(files);
         Ok(out)
+    }
+
+    /// The commit history for a file (newest first).
+    pub async fn history(&self, path: &str) -> Result<Vec<nimbus_github::CommitInfo>> {
+        self.gh
+            .list_commits(&self.owner, &self.repo, &self.branch, path)
+            .await
+    }
+
+    /// Restore `path` to the version it had at `commit_sha` (a new commit that
+    /// re-points the path to the historical blob). Works with encryption since
+    /// the path — and thus the AAD — is unchanged.
+    pub async fn restore_version(&self, path: &str, commit_sha: &str) -> Result<()> {
+        let file = self
+            .gh
+            .file_at_commit(&self.owner, &self.repo, commit_sha, path)
+            .await?
+            .ok_or_else(|| NimbusError::NotFound(format!("{path}@{commit_sha}")))?;
+        let changes = [TreeChange {
+            path: path.to_string(),
+            blob_sha: Some(file.sha.clone()),
+        }];
+        self.gh
+            .commit_changes(
+                &self.owner,
+                &self.repo,
+                &self.branch,
+                &changes,
+                &format!("nimbus: restore {path} to {commit_sha}"),
+            )
+            .await?;
+        self.cache_put(&DriveFile {
+            path: path.to_string(),
+            kind: FileKind::File,
+            size: file.size,
+            sha: Some(file.sha),
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Move a file to the trash (a `.nimbus-trash/<ts>/<path>` location) and
+    /// record it so it can be listed/restored/purged later.
+    pub async fn trash(&self, path: &str) -> Result<()> {
+        let ts = now_secs();
+        let trash_path = format!("{TRASH_PREFIX}{ts}/{path}");
+        self.move_file(path, &trash_path).await?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO trash (drive, trash_path, original_path, deleted_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(self.drive_key())
+        .bind(&trash_path)
+        .bind(path)
+        .bind(ts)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| NimbusError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// List trashed files, most recently deleted first.
+    pub async fn list_trash(&self) -> Result<Vec<TrashEntry>> {
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT trash_path, original_path, deleted_at FROM trash WHERE drive = ? \
+             ORDER BY deleted_at DESC",
+        )
+        .bind(self.drive_key())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| NimbusError::Storage(e.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(|(trash_path, original_path, deleted_at)| TrashEntry {
+                trash_path,
+                original_path,
+                deleted_at,
+            })
+            .collect())
+    }
+
+    /// Restore a trashed file back to its original path.
+    pub async fn restore(&self, trash_path: &str) -> Result<()> {
+        let original: Option<String> = sqlx::query_scalar(
+            "SELECT original_path FROM trash WHERE drive = ? AND trash_path = ?",
+        )
+        .bind(self.drive_key())
+        .bind(trash_path)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| NimbusError::Storage(e.to_string()))?;
+        let original = original.ok_or_else(|| NimbusError::NotFound(trash_path.to_string()))?;
+        self.move_file(trash_path, &original).await?;
+        sqlx::query("DELETE FROM trash WHERE drive = ? AND trash_path = ?")
+            .bind(self.drive_key())
+            .bind(trash_path)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| NimbusError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Permanently delete trashed entries older than `retention_secs`.
+    /// Returns the number of entries purged.
+    pub async fn purge_expired(&self, retention_secs: i64) -> Result<u64> {
+        let cutoff = now_secs() - retention_secs;
+        let expired: Vec<String> =
+            sqlx::query_scalar("SELECT trash_path FROM trash WHERE drive = ? AND deleted_at < ?")
+                .bind(self.drive_key())
+                .bind(cutoff)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| NimbusError::Storage(e.to_string()))?;
+
+        let mut purged = 0;
+        for trash_path in expired {
+            self.delete(&trash_path).await?;
+            sqlx::query("DELETE FROM trash WHERE drive = ? AND trash_path = ?")
+                .bind(self.drive_key())
+                .bind(&trash_path)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| NimbusError::Storage(e.to_string()))?;
+            purged += 1;
+        }
+        Ok(purged)
     }
 }
 
@@ -733,6 +881,34 @@ mod tests {
         let files = engine.list().await.unwrap();
         let names: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(names, vec!["docs/b.txt"]);
+    }
+
+    #[tokio::test]
+    async fn trash_then_restore_round_trips() {
+        let server = MockServer::start().await;
+        mount_upload(&server, "s1").await;
+        let gh = GitHubClient::new("tok", server.uri());
+        let pool = memory_pool().await;
+        let engine = StorageEngine::new(gh, pool, "me", "drive", "main");
+
+        engine.upload("a.txt", b"x").await.unwrap();
+        engine.trash("a.txt").await.unwrap();
+
+        // Trashed files don't show in the normal listing.
+        assert!(engine.list().await.unwrap().is_empty());
+        let trash = engine.list_trash().await.unwrap();
+        assert_eq!(trash.len(), 1);
+        assert_eq!(trash[0].original_path, "a.txt");
+        assert!(trash[0].trash_path.starts_with(".nimbus-trash/"));
+
+        // Restore brings it back and empties the trash.
+        engine.restore(&trash[0].trash_path).await.unwrap();
+        let files = engine.list().await.unwrap();
+        assert_eq!(
+            files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            vec!["a.txt"]
+        );
+        assert!(engine.list_trash().await.unwrap().is_empty());
     }
 
     #[tokio::test]

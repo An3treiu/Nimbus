@@ -91,6 +91,10 @@ pub fn router(state: AppState) -> Router {
             get(download_file).post(upload_file).delete(delete_file),
         )
         .route("/api/move", post(move_file))
+        .route("/api/trash", get(list_trash))
+        .route("/api/trash/restore", post(restore_trash))
+        .route("/api/history/*path", get(file_history))
+        .route("/api/restore", post(restore_version))
         .route("/api/sync", post(sync_drive))
         .route("/api/search", get(search_files))
         .route("/api/chat", post(chat))
@@ -188,17 +192,56 @@ async fn list_files(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[derive(Deserialize)]
+struct DeleteParams {
+    /// `true` = permanent delete; otherwise the file is moved to Trash.
+    permanent: Option<bool>,
+}
+
 async fn delete_file(
     State(st): State<AppState>,
     Path(path): Path<String>,
+    Query(params): Query<DeleteParams>,
 ) -> Result<StatusCode, StatusCode> {
-    match st.engine.delete(&path).await {
+    let permanent = params.permanent.unwrap_or(false);
+    let result = if permanent {
+        st.engine.delete(&path).await
+    } else {
+        st.engine.trash(&path).await
+    };
+    match result {
         Ok(()) => {
             if let Some(search) = &st.search {
                 let _ = search.remove(&st.engine.drive_id(), &path).await;
             }
             Ok(StatusCode::NO_CONTENT)
         }
+        Err(nimbus_core::NimbusError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::BAD_GATEWAY),
+    }
+}
+
+async fn list_trash(
+    State(st): State<AppState>,
+) -> Result<Json<Vec<nimbus_storage::TrashEntry>>, StatusCode> {
+    st.engine
+        .list_trash()
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Deserialize)]
+struct RestoreRequest {
+    trash_path: String,
+}
+
+async fn restore_trash(
+    State(st): State<AppState>,
+    Json(req): Json<RestoreRequest>,
+) -> Result<StatusCode, StatusCode> {
+    match st.engine.restore(&req.trash_path).await {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(nimbus_core::NimbusError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::BAD_GATEWAY),
     }
@@ -252,6 +295,34 @@ async fn download_file(
 ) -> Result<axum::body::Bytes, StatusCode> {
     match st.engine.download(&path).await {
         Ok(bytes) => Ok(bytes.into()),
+        Err(nimbus_core::NimbusError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::BAD_GATEWAY),
+    }
+}
+
+async fn file_history(
+    State(st): State<AppState>,
+    Path(path): Path<String>,
+) -> Result<Json<Vec<nimbus_github::CommitInfo>>, StatusCode> {
+    st.engine
+        .history(&path)
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::BAD_GATEWAY)
+}
+
+#[derive(Deserialize)]
+struct RestoreVersionRequest {
+    path: String,
+    commit: String,
+}
+
+async fn restore_version(
+    State(st): State<AppState>,
+    Json(req): Json<RestoreVersionRequest>,
+) -> Result<StatusCode, StatusCode> {
+    match st.engine.restore_version(&req.path, &req.commit).await {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(nimbus_core::NimbusError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::BAD_GATEWAY),
     }
@@ -474,7 +545,12 @@ mod tests {
 
         let unauth = app
             .clone()
-            .oneshot(Request::builder().uri("/api/files").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);

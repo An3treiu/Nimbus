@@ -7,7 +7,7 @@
 use crate::GitHubClient;
 use nimbus_core::{NimbusError, Result};
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A blob entry discovered while listing a branch's tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,14 @@ pub struct TreeFile {
 pub struct TreeChange {
     pub path: String,
     pub blob_sha: Option<String>,
+}
+
+/// One revision of a file, from the commit history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommitInfo {
+    pub sha: String,
+    pub message: String,
+    pub date: String,
 }
 
 #[derive(Deserialize)]
@@ -275,12 +283,17 @@ impl GitHubClient {
             None => return Ok(Vec::new()),
         };
         let tree_sha = self.get_commit_tree(owner, repo, &head).await?;
+        self.tree_entries(owner, repo, &tree_sha).await
+    }
+
+    /// All blob entries of a tree (recursive).
+    async fn tree_entries(&self, owner: &str, repo: &str, tree_sha: &str) -> Result<Vec<TreeFile>> {
         let url = format!(
             "{}/git/trees/{}?recursive=1",
             self.repo_url(owner, repo),
             tree_sha
         );
-        let body: TreeResponse = json_or_err(self.get(&url), "list_tree").await?;
+        let body: TreeResponse = json_or_err(self.get(&url), "tree_entries").await?;
         Ok(body
             .tree
             .into_iter()
@@ -292,6 +305,59 @@ impl GitHubClient {
             })
             .collect())
     }
+
+    /// The blob entry (sha + size) for `path` as it existed at `commit_sha`.
+    pub async fn file_at_commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        commit_sha: &str,
+        path: &str,
+    ) -> Result<Option<TreeFile>> {
+        let tree_sha = self.get_commit_tree(owner, repo, commit_sha).await?;
+        let entries = self.tree_entries(owner, repo, &tree_sha).await?;
+        Ok(entries.into_iter().find(|e| e.path == path))
+    }
+
+    /// List the commit history touching `path` on `branch` (newest first).
+    pub async fn list_commits(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        path: &str,
+    ) -> Result<Vec<CommitInfo>> {
+        let url = format!("{}/commits", self.repo_url(owner, repo));
+        let req = self
+            .get(&url)
+            .query(&[("sha", branch), ("path", path), ("per_page", "50")]);
+        let items: Vec<CommitListItem> = json_or_err(req, "list_commits").await?;
+        Ok(items
+            .into_iter()
+            .map(|c| CommitInfo {
+                sha: c.sha,
+                message: c.commit.message,
+                date: c.commit.author.date,
+            })
+            .collect())
+    }
+}
+
+#[derive(Deserialize)]
+struct CommitListItem {
+    sha: String,
+    commit: CommitMeta,
+}
+
+#[derive(Deserialize)]
+struct CommitMeta {
+    message: String,
+    author: CommitAuthor,
+}
+
+#[derive(Deserialize)]
+struct CommitAuthor {
+    date: String,
 }
 
 #[cfg(test)]
@@ -497,6 +563,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(commit, "nc");
+    }
+
+    #[tokio::test]
+    async fn list_commits_parses_history() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/me/drive/commits"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "sha": "c2", "commit": { "message": "edit", "author": { "date": "2026-06-01T10:00:00Z" } } },
+                { "sha": "c1", "commit": { "message": "create", "author": { "date": "2026-05-31T09:00:00Z" } } }
+            ])))
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new("tok", server.uri());
+        let commits = client
+            .list_commits("me", "drive", "main", "a.txt")
+            .await
+            .unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].sha, "c2");
+        assert_eq!(commits[0].message, "edit");
     }
 
     #[tokio::test]
