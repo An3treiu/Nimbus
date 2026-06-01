@@ -36,6 +36,20 @@ pub enum CryptoError {
     RecoveryKey,
 }
 
+/// Compare two byte slices in (length-checked) constant time, to avoid leaking
+/// secrets via timing. The length comparison itself is not constant-time, which
+/// is acceptable for fixed-size hashes/tokens.
+pub fn constant_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Fill an N-byte array with cryptographically secure random bytes.
 fn random_array<const N: usize>() -> [u8; N] {
     let mut buf = [0u8; N];

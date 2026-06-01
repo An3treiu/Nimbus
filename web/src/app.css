@@ -1,27 +1,43 @@
 :root,
 [data-theme='dark'] {
-  --bg: #0f1115;
-  --bg-grad: radial-gradient(1100px 500px at 50% -15%, #1a2233, var(--bg));
-  --surface: #161922;
+  --bg: #0b0d12;
+  --bg-grad:
+    radial-gradient(900px 520px at 12% -10%, rgba(106, 163, 255, 0.18), transparent 60%),
+    radial-gradient(820px 520px at 100% 0%, rgba(167, 139, 250, 0.16), transparent 55%),
+    radial-gradient(700px 600px at 60% 110%, rgba(34, 211, 238, 0.12), transparent 55%),
+    var(--bg);
+  --surface: rgba(22, 25, 34, 0.72);
+  --surface-solid: #161922;
   --surface-2: #1e222c;
   --border: #2a2f3a;
   --text: #e6e8ec;
   --muted: #9aa3b2;
   --accent: #6aa3ff;
+  --accent-2: #a78bfa;
   --accent-ink: #07101f;
+  --folder-default: #ffb02e;
+  --glow: 0 0 0 1px rgba(106, 163, 255, 0.15), 0 12px 40px rgba(0, 0, 0, 0.45);
   color-scheme: dark;
 }
 
 [data-theme='light'] {
-  --bg: #f5f7fb;
-  --bg-grad: radial-gradient(1100px 500px at 50% -15%, #e9eefc, var(--bg));
-  --surface: #ffffff;
-  --surface-2: #f0f3f9;
+  --bg: #eef2fb;
+  --bg-grad:
+    radial-gradient(900px 520px at 12% -10%, rgba(47, 107, 255, 0.14), transparent 60%),
+    radial-gradient(820px 520px at 100% 0%, rgba(167, 139, 250, 0.14), transparent 55%),
+    radial-gradient(700px 600px at 60% 110%, rgba(34, 211, 238, 0.12), transparent 55%),
+    var(--bg);
+  --surface: rgba(255, 255, 255, 0.78);
+  --surface-solid: #ffffff;
+  --surface-2: #eef2f9;
   --border: #dce1ea;
   --text: #161922;
   --muted: #5c6573;
   --accent: #2f6bff;
+  --accent-2: #7c5cff;
   --accent-ink: #ffffff;
+  --folder-default: #f59e0b;
+  --glow: 0 0 0 1px rgba(47, 107, 255, 0.1), 0 14px 40px rgba(40, 60, 120, 0.14);
   color-scheme: light;
 }
 
@@ -193,3 +209,77 @@ ul.rows li:last-child, .rows-wrap .entry:last-child { border-bottom: none; }
 .palette-list li button { width: 100%; text-align: left; background: none; border: none; color: var(--text); padding: 0.6rem 0.7rem; border-radius: 8px; cursor: pointer; font: inherit; word-break: break-all; }
 .palette-list li button:hover { background: var(--surface-2); }
 .pad { padding: 0.7rem; }
+
+/* ============================================================
+   Premium 2026 layer — glassmorphism, gradient accents, glow
+   ============================================================ */
+
+.logo-svg { filter: drop-shadow(0 2px 8px rgba(106, 163, 255, 0.45)); flex-shrink: 0; }
+
+.sidebar {
+  background: var(--surface);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border-right: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 0.55rem; }
+.brand-name {
+  font-weight: 800; letter-spacing: -0.02em;
+  background: linear-gradient(120deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.sidebar nav button.active {
+  background: linear-gradient(120deg, var(--accent), var(--accent-2));
+  color: #fff; box-shadow: 0 6px 18px rgba(106, 163, 255, 0.35);
+}
+
+/* Accent / primary buttons get a gradient + glow */
+button.primary, label.primary {
+  background: linear-gradient(120deg, var(--accent), var(--accent-2));
+  color: #fff; border: none;
+  box-shadow: 0 8px 22px rgba(106, 163, 255, 0.32);
+}
+button.primary:hover, label.primary:hover { filter: brightness(1.06); }
+
+/* Search bar with inline AI button */
+.searchbar { position: relative; display: flex; align-items: center; gap: 0.4rem; }
+.searchbar input { border-radius: 999px; }
+.ai-btn {
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--accent);
+  border-radius: 999px; padding: 0.4rem 0.7rem; font-size: 0.8rem; font-weight: 600; cursor: pointer;
+}
+.ai-btn:hover { border-color: var(--accent); }
+
+/* Folder icon + SharePoint-style color palette */
+.folder-ico { width: 20px; height: 20px; vertical-align: -4px; margin-right: 0.5rem; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.25)); }
+.entry.folder .name { display: inline-flex; align-items: center; }
+.entry.folder { position: relative; }
+.palette-pop {
+  position: absolute; right: 1rem; top: 100%; z-index: 8; margin-top: 4px;
+  display: flex; gap: 6px; padding: 8px; border-radius: 12px;
+  background: var(--surface-solid); border: 1px solid var(--border); box-shadow: var(--glow);
+}
+.swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.2); cursor: pointer; padding: 0; }
+.swatch:hover { transform: scale(1.12); }
+.swatch.reset { background: var(--surface-2); color: var(--muted); font-size: 0.7rem; border-color: var(--border); }
+
+/* Topbar glass */
+.topbar { background: var(--surface); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
+
+/* Cards / rows on glass surfaces */
+.rows-wrap, ul.rows, .entry.card { backdrop-filter: blur(8px); }
+
+/* Premium login screen */
+.login-card {
+  background: var(--surface); backdrop-filter: blur(22px) saturate(150%);
+  box-shadow: var(--glow); border: 1px solid var(--border);
+}
+.login-brand { display: flex; align-items: center; gap: 0.6rem; font-size: 1.7rem; font-weight: 800; }
+.login-brand span {
+  background: linear-gradient(120deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.login-card button.primary { padding: 0.7rem; font-size: 1rem; border-radius: 12px; }
+
+/* Storage meter gradient */
+.usage-bar span { background: linear-gradient(90deg, var(--accent), var(--accent-2)); }

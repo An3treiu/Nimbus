@@ -82,7 +82,7 @@ pub async fn resolve_share(
     if let (Some(salt), Some(expected)) = (pw_salt, pw_hash) {
         let provided = password.ok_or(ShareError::PasswordRequired)?;
         let got = derive_key(provided, &salt).map_err(|_| ShareError::BadPassword)?;
-        if got.as_slice() != expected.as_slice() {
+        if !nimbus_crypto::constant_eq(got.as_slice(), &expected) {
             return Err(ShareError::BadPassword);
         }
     }
