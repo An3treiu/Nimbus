@@ -25,6 +25,8 @@ export NIMBUS_DRIVE_OWNER=your-username
 export NIMBUS_DRIVE_REPO=your-drive-repo
 export NIMBUS_DRIVE_BRANCH=main          # optional, defaults to "main"
 export NIMBUS_ENCRYPTION_PASSPHRASE=...  # optional: enables client-side encryption
+export NIMBUS_AI_PROVIDER=ollama         # optional: "openai" | "ollama" for search
+export NIMBUS_AI_MODEL=nomic-embed-text  # optional: embedding model
 cargo run --release
 # -> nimbus listening on http://127.0.0.1:8080
 ```
@@ -37,7 +39,25 @@ a random data key (DEK) encrypts files and is itself wrapped by both a key
 derived from your passphrase (Argon2id) and a one-time **recovery key** printed
 on first run. GitHub only ever stores ciphertext; the keys never leave your
 machine. Lose both the passphrase and the recovery key and the data is gone —
-that is the point.
+that is the point. Encryption binds each file's path as AES-GCM associated data,
+so a ciphertext cannot be silently moved to another path. Set
+`NIMBUS_RECOVERY_KEY` to unlock with the recovery key if the passphrase is lost,
+and `NIMBUS_RECOVERY_KEY_OUT` to write the first-run key to a file instead of stdout.
+
+## Semantic search (bring your own AI)
+
+Set `NIMBUS_AI_PROVIDER` to `openai` (any OpenAI-compatible endpoint — OpenAI,
+Google, LM Studio, llama.cpp) or `ollama` (fully local). Text files are embedded
+on upload and ranked by cosine similarity at query time. Embeddings are computed
+from plaintext **before** encryption, so search works on encrypted drives. Your
+key/model are used directly — Nimbus never proxies AI through its own servers.
+
+| Env var | Purpose |
+| ------- | ------- |
+| `NIMBUS_AI_PROVIDER` | `openai` or `ollama` |
+| `NIMBUS_AI_BASE_URL` | endpoint (defaults per provider) |
+| `NIMBUS_AI_API_KEY`  | key for OpenAI-compatible providers |
+| `NIMBUS_AI_MODEL`    | embedding model |
 
 ## API
 
@@ -47,6 +67,7 @@ that is the point.
 | `POST` | `/api/files/<path>`   | Upload (body = raw bytes); commits to the branch  |
 | `GET`  | `/api/files/<path>`   | Download                                          |
 | `POST` | `/api/sync`           | Rebuild the cache from the branch's tree on GitHub |
+| `GET`  | `/api/search?q=&k=`   | Semantic search over indexed files (501 if AI off) |
 
 Uploads are durable: each one creates a blob **and** a commit on the configured
 branch, so files survive GitHub's garbage collection. `GET /api/files` reads the

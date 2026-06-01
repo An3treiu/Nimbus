@@ -8,6 +8,8 @@ nimbus-core = { path = "../nimbus-core" }
 nimbus-github = { path = "../nimbus-github" }
 nimbus-storage = { path = "../nimbus-storage" }
 nimbus-crypto = { path = "../nimbus-crypto" }
+nimbus-ai = { path = "../nimbus-ai" }
+nimbus-search = { path = "../nimbus-search" }
 axum = "0.7"
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -26,3 +28,4 @@ path = "src/main.rs"
 [dev-dependencies]
 wiremock = "0.6"
 http-body-util = "0.1"
+async-trait = "0.1"

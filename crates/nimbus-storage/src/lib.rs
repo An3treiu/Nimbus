@@ -41,17 +41,22 @@ impl StorageEngine {
     }
 
     /// Encrypt bytes for storage if a vault is attached, else pass through.
-    fn seal(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+    /// The file path is bound as associated data (anti-substitution).
+    fn seal(&self, path: &str, bytes: &[u8]) -> Result<Vec<u8>> {
         match &self.vault {
-            Some(v) => v.seal(bytes).map_err(|e| NimbusError::Storage(e.to_string())),
+            Some(v) => v
+                .seal(path.as_bytes(), bytes)
+                .map_err(|e| NimbusError::Storage(e.to_string())),
             None => Ok(bytes.to_vec()),
         }
     }
 
     /// Decrypt stored bytes if a vault is attached, else pass through.
-    fn open(&self, bytes: Vec<u8>) -> Result<Vec<u8>> {
+    fn open(&self, path: &str, bytes: Vec<u8>) -> Result<Vec<u8>> {
         match &self.vault {
-            Some(v) => v.open(&bytes).map_err(|e| NimbusError::Storage(e.to_string())),
+            Some(v) => v
+                .open(path.as_bytes(), &bytes)
+                .map_err(|e| NimbusError::Storage(e.to_string())),
             None => Ok(bytes),
         }
     }
@@ -60,10 +65,15 @@ impl StorageEngine {
         format!("{}/{}", self.owner, self.repo)
     }
 
+    /// Stable identifier for this drive (`owner/repo`), used as a cache/search key.
+    pub fn drive_id(&self) -> String {
+        self.drive_key()
+    }
+
     /// Upload bytes to `path`: create a blob, commit it to the branch so it is
     /// durable, then record it in the cache.
     pub async fn upload(&self, path: &str, bytes: &[u8]) -> Result<DriveFile> {
-        let stored = self.seal(bytes)?;
+        let stored = self.seal(path, bytes)?;
         let sha = self.gh.create_blob(&self.owner, &self.repo, &stored).await?;
         self.gh
             .commit_blob(
@@ -168,7 +178,7 @@ impl StorageEngine {
                 .flatten();
         let sha = sha.ok_or_else(|| NimbusError::NotFound(path.to_string()))?;
         let raw = self.gh.get_blob(&self.owner, &self.repo, &sha).await?;
-        self.open(raw)
+        self.open(path, raw)
     }
 }
 
@@ -351,14 +361,15 @@ mod tests {
         let ciphertext = nimbus_github::decode_blob(content_b64).unwrap();
 
         assert_ne!(ciphertext, b"classified", "GitHub must never see plaintext");
-        assert_eq!(vault.open(&ciphertext).unwrap(), b"classified");
+        // The ciphertext is bound to the path via AAD.
+        assert_eq!(vault.open(b"secret.txt", &ciphertext).unwrap(), b"classified");
     }
 
     #[tokio::test]
     async fn download_with_vault_decrypts() {
         let server = MockServer::start().await;
         let vault = nimbus_crypto::Vault::new(nimbus_crypto::generate_key());
-        let ciphertext = vault.seal(b"hello enc").unwrap();
+        let ciphertext = vault.seal(b"f.bin", b"hello enc").unwrap();
         let encoded = nimbus_github::encode_blob(&ciphertext);
         Mock::given(method("GET"))
             .and(wpath("/repos/me/drive/git/blobs/csha"))

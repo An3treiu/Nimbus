@@ -1,0 +1,15 @@
+[package]
+name = "nimbus-search"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nimbus-core = { path = "../nimbus-core" }
+nimbus-ai = { path = "../nimbus-ai" }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+async-trait = "0.1"

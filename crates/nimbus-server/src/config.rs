@@ -9,6 +9,15 @@ pub struct Config {
     pub bind_addr: String,
     /// When set, files are client-side encrypted. None disables encryption.
     pub encryption_passphrase: Option<String>,
+    /// Optional recovery key used to unlock the vault if the passphrase is lost.
+    pub recovery_key: Option<String>,
+    /// Optional file path to write the one-time recovery key to (instead of stdout).
+    pub recovery_key_out: Option<String>,
+    /// AI provider for semantic search: "openai", "ollama", or None to disable.
+    pub ai_provider: Option<String>,
+    pub ai_base_url: Option<String>,
+    pub ai_api_key: Option<String>,
+    pub ai_model: Option<String>,
 }
 
 impl Config {
@@ -23,8 +32,13 @@ impl Config {
             database_url: get("NIMBUS_DATABASE_URL")
                 .unwrap_or_else(|| "sqlite:nimbus.db?mode=rwc".into()),
             bind_addr: get("NIMBUS_BIND_ADDR").unwrap_or_else(|| "127.0.0.1:8080".into()),
-            encryption_passphrase: get("NIMBUS_ENCRYPTION_PASSPHRASE")
-                .filter(|s| !s.is_empty()),
+            encryption_passphrase: get("NIMBUS_ENCRYPTION_PASSPHRASE").filter(|s| !s.is_empty()),
+            recovery_key: get("NIMBUS_RECOVERY_KEY").filter(|s| !s.is_empty()),
+            recovery_key_out: get("NIMBUS_RECOVERY_KEY_OUT").filter(|s| !s.is_empty()),
+            ai_provider: get("NIMBUS_AI_PROVIDER").filter(|s| !s.is_empty()),
+            ai_base_url: get("NIMBUS_AI_BASE_URL").filter(|s| !s.is_empty()),
+            ai_api_key: get("NIMBUS_AI_API_KEY").filter(|s| !s.is_empty()),
+            ai_model: get("NIMBUS_AI_MODEL").filter(|s| !s.is_empty()),
         })
     }
 }
