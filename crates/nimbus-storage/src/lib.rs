@@ -1,14 +1,19 @@
 use nimbus_core::{DriveFile, FileKind, NimbusError, Result};
+use nimbus_crypto::Vault;
 use nimbus_github::GitHubClient;
 use sqlx::SqlitePool;
 
 /// Orchestrates the drive model on top of GitHub (durable commits) + the local cache.
+///
+/// When a [`Vault`] is attached, file bytes are encrypted before upload and
+/// decrypted after download — GitHub only ever stores ciphertext.
 pub struct StorageEngine {
     gh: GitHubClient,
     pool: SqlitePool,
     owner: String,
     repo: String,
     branch: String,
+    vault: Option<Vault>,
 }
 
 impl StorageEngine {
@@ -25,6 +30,29 @@ impl StorageEngine {
             owner: owner.into(),
             repo: repo.into(),
             branch: branch.into(),
+            vault: None,
+        }
+    }
+
+    /// Attach a vault so all uploads/downloads are transparently encrypted.
+    pub fn with_vault(mut self, vault: Vault) -> Self {
+        self.vault = Some(vault);
+        self
+    }
+
+    /// Encrypt bytes for storage if a vault is attached, else pass through.
+    fn seal(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        match &self.vault {
+            Some(v) => v.seal(bytes).map_err(|e| NimbusError::Storage(e.to_string())),
+            None => Ok(bytes.to_vec()),
+        }
+    }
+
+    /// Decrypt stored bytes if a vault is attached, else pass through.
+    fn open(&self, bytes: Vec<u8>) -> Result<Vec<u8>> {
+        match &self.vault {
+            Some(v) => v.open(&bytes).map_err(|e| NimbusError::Storage(e.to_string())),
+            None => Ok(bytes),
         }
     }
 
@@ -35,7 +63,8 @@ impl StorageEngine {
     /// Upload bytes to `path`: create a blob, commit it to the branch so it is
     /// durable, then record it in the cache.
     pub async fn upload(&self, path: &str, bytes: &[u8]) -> Result<DriveFile> {
-        let sha = self.gh.create_blob(&self.owner, &self.repo, bytes).await?;
+        let stored = self.seal(bytes)?;
+        let sha = self.gh.create_blob(&self.owner, &self.repo, &stored).await?;
         self.gh
             .commit_blob(
                 &self.owner,
@@ -138,7 +167,8 @@ impl StorageEngine {
                 .map_err(|e| NimbusError::Storage(e.to_string()))?
                 .flatten();
         let sha = sha.ok_or_else(|| NimbusError::NotFound(path.to_string()))?;
-        self.gh.get_blob(&self.owner, &self.repo, &sha).await
+        let raw = self.gh.get_blob(&self.owner, &self.repo, &sha).await?;
+        self.open(raw)
     }
 }
 
@@ -296,5 +326,58 @@ mod tests {
         let names: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(names, vec!["x.txt", "y.txt"]);
         assert_eq!(files[0].sha.as_deref(), Some("bx"));
+    }
+
+    #[tokio::test]
+    async fn upload_with_vault_sends_ciphertext_to_github() {
+        let server = MockServer::start().await;
+        mount_upload(&server, "encsha").await;
+
+        let vault = nimbus_crypto::Vault::new(nimbus_crypto::generate_key());
+        let gh = GitHubClient::new("tok", server.uri());
+        let pool = memory_pool().await;
+        let engine = StorageEngine::new(gh, pool, "me", "drive", "main").with_vault(vault.clone());
+
+        engine.upload("secret.txt", b"classified").await.unwrap();
+
+        // Inspect what was actually POSTed to the blob endpoint.
+        let reqs = server.received_requests().await.unwrap();
+        let blob_req = reqs
+            .iter()
+            .find(|r| r.method.as_str() == "POST" && r.url.path().ends_with("/git/blobs"))
+            .expect("a blob POST was made");
+        let body: serde_json::Value = serde_json::from_slice(&blob_req.body).unwrap();
+        let content_b64 = body["content"].as_str().unwrap();
+        let ciphertext = nimbus_github::decode_blob(content_b64).unwrap();
+
+        assert_ne!(ciphertext, b"classified", "GitHub must never see plaintext");
+        assert_eq!(vault.open(&ciphertext).unwrap(), b"classified");
+    }
+
+    #[tokio::test]
+    async fn download_with_vault_decrypts() {
+        let server = MockServer::start().await;
+        let vault = nimbus_crypto::Vault::new(nimbus_crypto::generate_key());
+        let ciphertext = vault.seal(b"hello enc").unwrap();
+        let encoded = nimbus_github::encode_blob(&ciphertext);
+        Mock::given(method("GET"))
+            .and(wpath("/repos/me/drive/git/blobs/csha"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "content": encoded })))
+            .mount(&server)
+            .await;
+
+        let pool = memory_pool().await;
+        sqlx::query(
+            "INSERT INTO cached_files (drive, path, kind, size, sha) VALUES ('me/drive','f.bin','file',9,'csha')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let gh = GitHubClient::new("tok", server.uri());
+        let engine = StorageEngine::new(gh, pool, "me", "drive", "main").with_vault(vault);
+
+        let bytes = engine.download("f.bin").await.unwrap();
+        assert_eq!(bytes, b"hello enc");
     }
 }

@@ -1,0 +1,11 @@
+[package]
+name = "nimbus-crypto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+base64 = "0.22"
+thiserror = { workspace = true }

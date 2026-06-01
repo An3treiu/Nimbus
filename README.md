@@ -24,9 +24,20 @@ export NIMBUS_GITHUB_TOKEN=ghp_xxx       # a token with `repo` scope
 export NIMBUS_DRIVE_OWNER=your-username
 export NIMBUS_DRIVE_REPO=your-drive-repo
 export NIMBUS_DRIVE_BRANCH=main          # optional, defaults to "main"
+export NIMBUS_ENCRYPTION_PASSPHRASE=...  # optional: enables client-side encryption
 cargo run --release
 # -> nimbus listening on http://127.0.0.1:8080
 ```
+
+## Encryption (zero-knowledge)
+
+Set `NIMBUS_ENCRYPTION_PASSPHRASE` to encrypt every file client-side with
+AES-256-GCM before it ever reaches GitHub. Nimbus uses **envelope encryption**:
+a random data key (DEK) encrypts files and is itself wrapped by both a key
+derived from your passphrase (Argon2id) and a one-time **recovery key** printed
+on first run. GitHub only ever stores ciphertext; the keys never leave your
+machine. Lose both the passphrase and the recovery key and the data is gone —
+that is the point.
 
 ## API
 

@@ -7,6 +7,8 @@ pub struct Config {
     pub drive_branch: String,
     pub database_url: String,
     pub bind_addr: String,
+    /// When set, files are client-side encrypted. None disables encryption.
+    pub encryption_passphrase: Option<String>,
 }
 
 impl Config {
@@ -21,6 +23,8 @@ impl Config {
             database_url: get("NIMBUS_DATABASE_URL")
                 .unwrap_or_else(|| "sqlite:nimbus.db?mode=rwc".into()),
             bind_addr: get("NIMBUS_BIND_ADDR").unwrap_or_else(|| "127.0.0.1:8080".into()),
+            encryption_passphrase: get("NIMBUS_ENCRYPTION_PASSPHRASE")
+                .filter(|s| !s.is_empty()),
         })
     }
 }
