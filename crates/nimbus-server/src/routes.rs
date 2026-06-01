@@ -111,6 +111,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/trash", get(list_trash))
         .route("/api/trash/restore", post(restore_trash))
         .route("/api/history/*path", get(file_history))
+        .route("/api/activity", get(activity_feed))
         .route("/api/restore", post(restore_version))
         .route("/api/sync", post(sync_drive))
         .route("/api/usage", get(usage))
@@ -559,6 +560,28 @@ async fn file_history(
 }
 
 #[derive(Deserialize)]
+struct ActivityParams {
+    /// Max number of recent events to return (default 50, capped server-side).
+    limit: Option<u32>,
+}
+
+/// Drive-wide activity feed: the Git commit log, parsed into typed events
+/// (upload/delete/trash/move/restore). This is Nimbus's audit trail — it lives
+/// entirely in Git, so it can't be silently tampered with from the app.
+async fn activity_feed(
+    State(st): State<AppState>,
+    Query(params): Query<ActivityParams>,
+) -> Result<Json<Vec<crate::activity::ActivityEvent>>, StatusCode> {
+    let limit = params.limit.unwrap_or(50).clamp(1, 100);
+    let commits = st
+        .engine
+        .activity(limit)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Ok(Json(crate::activity::events_from_commits(commits)))
+}
+
+#[derive(Deserialize)]
 struct RestoreVersionRequest {
     path: String,
     commit: String,
@@ -776,6 +799,59 @@ mod tests {
         let files: Vec<DriveFile> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "hello.txt");
+    }
+
+    #[tokio::test]
+    async fn activity_feed_parses_commit_log() {
+        use crate::activity::{Action, ActivityEvent};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wpath("/repos/me/drive/commits"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "sha": "c3", "commit": { "message": "nimbus: upload a.txt", "author": { "date": "2026-06-02T10:00:00Z" } } },
+                { "sha": "c2", "commit": { "message": "nimbus: move a.txt -> .nimbus-trash/1717/a.txt", "author": { "date": "2026-06-02T09:00:00Z" } } },
+                { "sha": "c1", "commit": { "message": "initial", "author": { "date": "2026-06-01T08:00:00Z" } } }
+            ])))
+            .mount(&server)
+            .await;
+        let app = router(test_state(server.uri(), None).await);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/activity?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let events: Vec<ActivityEvent> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].action, Action::Upload);
+        assert_eq!(events[0].path, "a.txt");
+        assert_eq!(events[1].action, Action::Trash);
+        assert_eq!(events[1].path, "a.txt");
+        assert_eq!(events[2].action, Action::Other);
+    }
+
+    #[tokio::test]
+    async fn activity_feed_requires_auth_when_configured() {
+        let server = MockServer::start().await;
+        let mut st = test_state(server.uri(), None).await;
+        st.admin_token = Some("secret".into());
+        let app = router(st);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/activity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

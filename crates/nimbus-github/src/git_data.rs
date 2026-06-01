@@ -341,6 +341,32 @@ impl GitHubClient {
             })
             .collect())
     }
+
+    /// List the drive-wide commit history on `branch` (newest first), without
+    /// filtering to a single path. Used to build the activity feed. `limit`
+    /// caps the page size (GitHub allows up to 100).
+    pub async fn list_branch_commits(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        limit: u32,
+    ) -> Result<Vec<CommitInfo>> {
+        let url = format!("{}/commits", self.repo_url(owner, repo));
+        let per_page = limit.clamp(1, 100).to_string();
+        let req = self
+            .get(&url)
+            .query(&[("sha", branch), ("per_page", per_page.as_str())]);
+        let items: Vec<CommitListItem> = json_or_err(req, "list_branch_commits").await?;
+        Ok(items
+            .into_iter()
+            .map(|c| CommitInfo {
+                sha: c.sha,
+                message: c.commit.message,
+                date: c.commit.author.date,
+            })
+            .collect())
+    }
 }
 
 #[derive(Deserialize)]
@@ -584,6 +610,50 @@ mod tests {
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].sha, "c2");
         assert_eq!(commits[0].message, "edit");
+    }
+
+    #[tokio::test]
+    async fn list_branch_commits_parses_drive_wide_history() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/me/drive/commits"))
+            .and(query_param("sha", "main"))
+            .and(query_param("per_page", "5"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "sha": "c3", "commit": { "message": "nimbus: upload a.txt", "author": { "date": "2026-06-02T10:00:00Z" } } },
+                { "sha": "c2", "commit": { "message": "nimbus: move a.txt -> b.txt", "author": { "date": "2026-06-01T09:00:00Z" } } }
+            ])))
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new("tok", server.uri());
+        let commits = client
+            .list_branch_commits("me", "drive", "main", 5)
+            .await
+            .unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].sha, "c3");
+        assert_eq!(commits[0].message, "nimbus: upload a.txt");
+        assert_eq!(commits[1].message, "nimbus: move a.txt -> b.txt");
+    }
+
+    #[tokio::test]
+    async fn list_branch_commits_clamps_limit() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        // limit 0 must be clamped up to at least 1 (GitHub rejects per_page=0).
+        Mock::given(method("GET"))
+            .and(path("/repos/me/drive/commits"))
+            .and(query_param("per_page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new("tok", server.uri());
+        let commits = client
+            .list_branch_commits("me", "drive", "main", 0)
+            .await
+            .unwrap();
+        assert!(commits.is_empty());
     }
 
     #[tokio::test]
