@@ -76,9 +76,13 @@ async fn main() -> anyhow::Result<()> {
         github_client_id: cfg.github_client_id.clone(),
         drive_owner: cfg.drive_owner.clone(),
         vault: vault.clone(),
+        admin_token: cfg.admin_token.clone(),
     };
 
-    warn_if_exposed(&cfg.bind_addr);
+    if cfg.admin_token.is_some() {
+        println!("nimbus: API authentication ENABLED (NIMBUS_ADMIN_TOKEN)");
+    }
+    guard_bind(&cfg.bind_addr, cfg.admin_token.is_some())?;
     // API routes, with the frontend served as a fallback (same origin).
     let app = match &cfg.web_dir {
         Some(dir) => {
@@ -167,21 +171,26 @@ fn build_chat_provider(cfg: &Config) -> Option<Arc<dyn ChatProvider>> {
     }
 }
 
-/// Warn loudly if binding to a non-loopback address: the API has no built-in
-/// authentication, so it must stay on loopback or sit behind an authenticating
-/// reverse proxy. (See SECURITY notes in the README.)
-fn warn_if_exposed(bind_addr: &str) {
+/// Refuse to bind to a non-loopback address unless API auth is configured.
+/// On loopback we allow no-auth for convenient single-user/local use.
+fn guard_bind(bind_addr: &str, auth_enabled: bool) -> anyhow::Result<()> {
     let host = bind_addr
         .rsplit_once(':')
         .map(|(h, _)| h)
         .unwrap_or(bind_addr);
     let is_loopback =
         host.starts_with("127.") || host == "localhost" || host == "::1" || host == "[::1]";
-    if !is_loopback {
-        eprintln!("\n⚠️  nimbus: bound to {bind_addr} — the API is UNAUTHENTICATED.");
-        eprintln!("    Do not expose this directly to untrusted networks. Put it behind a");
-        eprintln!("    reverse proxy that enforces authentication, or bind to 127.0.0.1.\n");
+    if !is_loopback && !auth_enabled {
+        anyhow::bail!(
+            "refusing to bind to non-loopback address {bind_addr} without authentication. \
+             Set NIMBUS_ADMIN_TOKEN (and ideally put Nimbus behind a TLS reverse proxy), \
+             or bind to 127.0.0.1 for local-only use."
+        );
     }
+    if !is_loopback {
+        eprintln!("nimbus: bound to {bind_addr} with auth enabled — ensure TLS via a reverse proxy.");
+    }
+    Ok(())
 }
 
 /// Emit the one-time recovery key. Prefer writing to a file (so it doesn't end

@@ -1,8 +1,9 @@
 use nimbus_core::{DriveFile, FileKind, NimbusError, Result};
 use nimbus_crypto::Vault;
-use nimbus_github::GitHubClient;
+use nimbus_github::{GitHubClient, TreeChange};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::collections::BTreeSet;
 
 /// Default chunking threshold: files larger than this are split. Kept below
 /// GitHub's ~100 MB blob limit, allowing for base64 expansion (~33%).
@@ -254,6 +255,148 @@ impl StorageEngine {
         } else {
             self.open(path, raw)
         }
+    }
+
+    /// Delete a file: commit its removal from the branch and drop it from the cache.
+    pub async fn delete(&self, path: &str) -> Result<()> {
+        let changes = [TreeChange {
+            path: path.to_string(),
+            blob_sha: None,
+        }];
+        self.gh
+            .commit_changes(
+                &self.owner,
+                &self.repo,
+                &self.branch,
+                &changes,
+                &format!("nimbus: delete {path}"),
+            )
+            .await?;
+        sqlx::query("DELETE FROM cached_files WHERE drive = ? AND path = ?")
+            .bind(self.drive_key())
+            .bind(path)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| NimbusError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Move/rename a file from `from` to `to`.
+    ///
+    /// With encryption on, the ciphertext is bound to its path (AAD), so we must
+    /// re-encrypt under the new path. Without encryption, we reuse the blob SHA.
+    pub async fn move_file(&self, from: &str, to: &str) -> Result<()> {
+        let (new_sha, size) = if self.vault.is_some() {
+            // Re-encrypt under the new path.
+            let bytes = self.download(from).await?;
+            let sha = self.store_content(to, &bytes).await?;
+            (sha, bytes.len() as u64)
+        } else {
+            let row: Option<(String, i64)> =
+                sqlx::query_as("SELECT sha, size FROM cached_files WHERE drive = ? AND path = ?")
+                    .bind(self.drive_key())
+                    .bind(from)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|e| NimbusError::Storage(e.to_string()))?;
+            let (sha, size) = row.ok_or_else(|| NimbusError::NotFound(from.to_string()))?;
+            (sha, size as u64)
+        };
+
+        let changes = [
+            TreeChange {
+                path: from.to_string(),
+                blob_sha: None,
+            },
+            TreeChange {
+                path: to.to_string(),
+                blob_sha: Some(new_sha.clone()),
+            },
+        ];
+        self.gh
+            .commit_changes(
+                &self.owner,
+                &self.repo,
+                &self.branch,
+                &changes,
+                &format!("nimbus: move {from} -> {to}"),
+            )
+            .await?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| NimbusError::Storage(e.to_string()))?;
+        sqlx::query("DELETE FROM cached_files WHERE drive = ? AND path = ?")
+            .bind(self.drive_key())
+            .bind(from)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| NimbusError::Storage(e.to_string()))?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO cached_files (drive, path, kind, size, sha) VALUES (?, ?, 'file', ?, ?)",
+        )
+        .bind(self.drive_key())
+        .bind(to)
+        .bind(size as i64)
+        .bind(&new_sha)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| NimbusError::Storage(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| NimbusError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// List the immediate children (files + subfolders) under `prefix`.
+    /// `prefix` "" lists the root. Folders are derived from path segments.
+    pub async fn list_dir(&self, prefix: &str) -> Result<Vec<DriveFile>> {
+        let norm = if prefix.is_empty() || prefix.ends_with('/') {
+            prefix.to_string()
+        } else {
+            format!("{prefix}/")
+        };
+        let rows: Vec<(String, i64, Option<String>)> = sqlx::query_as(
+            "SELECT path, size, sha FROM cached_files WHERE drive = ? AND path LIKE ? ORDER BY path",
+        )
+        .bind(self.drive_key())
+        .bind(format!("{norm}%"))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| NimbusError::Storage(e.to_string()))?;
+
+        let mut folders: BTreeSet<String> = BTreeSet::new();
+        let mut files: Vec<DriveFile> = Vec::new();
+        for (path, size, sha) in rows {
+            let rest = &path[norm.len()..];
+            if rest.is_empty() {
+                continue;
+            }
+            match rest.find('/') {
+                Some(idx) => {
+                    folders.insert(rest[..idx].to_string());
+                }
+                None => files.push(DriveFile {
+                    path: path.clone(),
+                    kind: FileKind::File,
+                    size: size as u64,
+                    sha,
+                }),
+            }
+        }
+        let mut out: Vec<DriveFile> = folders
+            .into_iter()
+            .map(|name| DriveFile {
+                path: format!("{norm}{name}"),
+                kind: FileKind::Folder,
+                size: 0,
+                sha: None,
+            })
+            .collect();
+        out.extend(files);
+        Ok(out)
     }
 }
 
@@ -561,5 +704,68 @@ mod tests {
         let engine = StorageEngine::new(gh, pool, "me", "drive", "main");
         let bytes = engine.download("big.bin").await.unwrap();
         assert_eq!(bytes, b"AAAABB");
+    }
+
+    #[tokio::test]
+    async fn delete_removes_from_cache_and_commits() {
+        let server = MockServer::start().await;
+        mount_upload(&server, "s1").await;
+        let gh = GitHubClient::new("tok", server.uri());
+        let pool = memory_pool().await;
+        let engine = StorageEngine::new(gh, pool, "me", "drive", "main");
+
+        engine.upload("a.txt", b"x").await.unwrap();
+        assert_eq!(engine.list().await.unwrap().len(), 1);
+        engine.delete("a.txt").await.unwrap();
+        assert!(engine.list().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn move_renames_in_cache() {
+        let server = MockServer::start().await;
+        mount_upload(&server, "s1").await;
+        let gh = GitHubClient::new("tok", server.uri());
+        let pool = memory_pool().await;
+        let engine = StorageEngine::new(gh, pool, "me", "drive", "main");
+
+        engine.upload("a.txt", b"x").await.unwrap();
+        engine.move_file("a.txt", "docs/b.txt").await.unwrap();
+        let files = engine.list().await.unwrap();
+        let names: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(names, vec!["docs/b.txt"]);
+    }
+
+    #[tokio::test]
+    async fn list_dir_derives_folders_and_files() {
+        let pool = memory_pool().await;
+        for (p, s) in [("readme.md", 3), ("docs/a.md", 5), ("docs/sub/c.md", 7)] {
+            sqlx::query("INSERT INTO cached_files (drive, path, kind, size, sha) VALUES ('me/drive', ?, 'file', ?, 's')")
+                .bind(p)
+                .bind(s)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let gh = GitHubClient::new("tok", "http://unused");
+        let engine = StorageEngine::new(gh, pool, "me", "drive", "main");
+
+        // Root: folder "docs" + file "readme.md".
+        let root = engine.list_dir("").await.unwrap();
+        let root_names: Vec<_> = root.iter().map(|f| (f.path.as_str(), &f.kind)).collect();
+        assert_eq!(
+            root_names,
+            vec![("docs", &FileKind::Folder), ("readme.md", &FileKind::File)]
+        );
+
+        // Inside docs: folder "docs/sub" + file "docs/a.md".
+        let docs = engine.list_dir("docs").await.unwrap();
+        let docs_names: Vec<_> = docs.iter().map(|f| (f.path.as_str(), &f.kind)).collect();
+        assert_eq!(
+            docs_names,
+            vec![
+                ("docs/sub", &FileKind::Folder),
+                ("docs/a.md", &FileKind::File)
+            ]
+        );
     }
 }
