@@ -184,19 +184,24 @@ async fn logout(State(st): State<AppState>, headers: axum::http::HeaderMap) -> R
         .into_response()
 }
 
-/// Register the FIRST admin account (only allowed when no users exist yet).
+/// Register the FIRST admin account. Allowed only when no `admin_token` is
+/// configured (token-auth instances bootstrap admins via env), and only when no
+/// account exists yet — enforced atomically to avoid a TOCTOU race.
 async fn register(
     State(st): State<AppState>,
     Json(cred): Json<Credentials>,
 ) -> Result<Response, StatusCode> {
     use axum::response::IntoResponse;
-    let count = crate::users::user_count(&st.pool).await.unwrap_or(1);
-    if count > 0 {
+    // When an admin token gates the API, accounts are seeded via env only.
+    if st.admin_token.is_some() {
         return Err(StatusCode::FORBIDDEN);
     }
-    crate::users::create_user(&st.pool, &cred.username, &cred.password)
+    let created = crate::users::register_first(&st.pool, &cred.username, &cred.password)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
+    if !created {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let token = crate::users::create_session(&st.pool, &cred.username)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -808,6 +813,26 @@ mod tests {
         // Second registration is rejected once an account exists.
         let r2 = app.oneshot(mk()).await.unwrap();
         assert_eq!(r2.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn register_forbidden_when_admin_token_set() {
+        let server = MockServer::start().await;
+        let mut st = test_state(server.uri(), None).await;
+        st.admin_token = Some("secret".into());
+        let app = router(st);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"username":"x","password":"y"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

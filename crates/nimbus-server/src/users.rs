@@ -42,6 +42,32 @@ pub async fn create_user(pool: &SqlitePool, username: &str, password: &str) -> a
     Ok(())
 }
 
+/// Atomically create the first account: inserts only if the users table is
+/// empty, eliminating a TOCTOU race between concurrent registrations. Returns
+/// `true` if this call created the account.
+pub async fn register_first(
+    pool: &SqlitePool,
+    username: &str,
+    password: &str,
+) -> anyhow::Result<bool> {
+    if username.is_empty() || password.is_empty() {
+        anyhow::bail!("username and password are required");
+    }
+    let salt = generate_salt();
+    let hash = derive_key(password, &salt).map_err(|e| anyhow::anyhow!("hash: {e}"))?;
+    let res = sqlx::query(
+        "INSERT INTO users (username, pw_salt, pw_hash, created_at) \
+         SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)",
+    )
+    .bind(username)
+    .bind(salt.as_slice())
+    .bind(hash.as_slice())
+    .bind(now_secs())
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() == 1)
+}
+
 /// Verify a username/password pair.
 pub async fn verify_login(
     pool: &SqlitePool,
@@ -138,5 +164,15 @@ mod tests {
         let pool = memory_pool().await;
         create_user(&pool, "a", "p").await.unwrap();
         assert!(create_user(&pool, "a", "p2").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn register_first_only_when_empty() {
+        let pool = memory_pool().await;
+        assert!(register_first(&pool, "admin", "pw").await.unwrap());
+        // Second registration is refused atomically (table no longer empty).
+        assert!(!register_first(&pool, "intruder", "pw").await.unwrap());
+        assert_eq!(user_count(&pool).await.unwrap(), 1);
+        assert!(verify_login(&pool, "admin", "pw").await.unwrap());
     }
 }
