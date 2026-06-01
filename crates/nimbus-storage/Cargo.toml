@@ -1,0 +1,14 @@
+[package]
+name = "nimbus-storage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nimbus-core = { path = "../nimbus-core" }
+nimbus-github = { path = "../nimbus-github" }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+wiremock = "0.6"
+serde_json = { workspace = true }
