@@ -1,6 +1,9 @@
 /// Runtime configuration, read from environment variables.
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// When set, all `/api/*` requests must present this token (Bearer header or
+    /// `nimbus_token` cookie). Required to bind to a non-loopback address.
+    pub admin_token: Option<String>,
     /// GitHub token from env (a PAT). Optional — OAuth device flow can provide one.
     pub github_token: Option<String>,
     /// OAuth App client id, enabling the in-app "Connect GitHub" device flow.
@@ -33,6 +36,7 @@ impl Config {
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let req = |k: &str| get(k).ok_or_else(|| anyhow::anyhow!("missing env {k}"));
         Ok(Self {
+            admin_token: get("NIMBUS_ADMIN_TOKEN").filter(|s| !s.is_empty()),
             github_token: get("NIMBUS_GITHUB_TOKEN").filter(|s| !s.is_empty()),
             github_client_id: get("NIMBUS_GITHUB_CLIENT_ID").filter(|s| !s.is_empty()),
             drive_owner: req("NIMBUS_DRIVE_OWNER")?,

@@ -1,6 +1,8 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::StatusCode,
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
     Json, Router,
 };
@@ -34,6 +36,44 @@ pub struct AppState {
     pub drive_owner: String,
     /// Vault for encrypting the persisted OAuth token at rest (if encryption is on).
     pub vault: Option<Vault>,
+    /// When set, `/api/*` requires this token (Bearer header or cookie).
+    pub admin_token: Option<String>,
+}
+
+/// Auth gate for `/api/*`. When `admin_token` is configured, requires a matching
+/// `Authorization: Bearer` header or `nimbus_token` cookie; otherwise open
+/// (intended for loopback-only dev — the server refuses to bind publicly
+/// without a token configured).
+async fn require_auth(
+    State(st): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let Some(expected) = &st.admin_token else {
+        return Ok(next.run(req).await);
+    };
+    let from_header = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(str::to_string);
+    let from_cookie = req
+        .headers()
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies
+                .split(';')
+                .filter_map(|c| c.trim().strip_prefix("nimbus_token="))
+                .next()
+                .map(str::to_string)
+        });
+    match from_header.or(from_cookie) {
+        // Constant-time-ish compare is overkill here; tokens are high-entropy.
+        Some(provided) if provided == *expected => Ok(next.run(req).await),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
 }
 
 /// Largest file we attempt to index for semantic search (bytes).
@@ -57,6 +97,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/status", get(auth_status))
         .route("/api/auth/device/start", post(auth_device_start))
         .route("/api/auth/device/poll", post(auth_device_poll))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
         .with_state(state)
 }
 
@@ -331,6 +372,7 @@ mod tests {
             github_client_id: None,
             drive_owner: "me".into(),
             vault: None,
+            admin_token: None,
         }
     }
 
@@ -424,6 +466,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_requires_token_when_configured() {
+        let server = MockServer::start().await;
+        let mut st = test_state(server.uri(), None).await;
+        st.admin_token = Some("secret".into());
+        let app = router(st);
+
+        let unauth = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/files").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+        let ok = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files")
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn search_without_index_returns_501() {
         let server = MockServer::start().await;
         let app = router(test_state(server.uri(), None).await);
@@ -480,6 +549,7 @@ mod tests {
             github_client_id: None,
             drive_owner: "me".into(),
             vault: None,
+            admin_token: None,
         });
 
         // Upload a text file -> it should be indexed.
@@ -554,6 +624,7 @@ mod tests {
             github_client_id: None,
             drive_owner: "me".into(),
             vault: None,
+            admin_token: None,
         });
 
         let resp = app
