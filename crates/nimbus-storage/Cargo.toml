@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 nimbus-core = { path = "../nimbus-core" }
 nimbus-github = { path = "../nimbus-github" }
+nimbus-crypto = { path = "../nimbus-crypto" }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
 
 [dev-dependencies]
