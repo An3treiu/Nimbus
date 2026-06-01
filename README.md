@@ -23,17 +23,23 @@ Nimbus sits at an intersection no mature product covers today:
 export NIMBUS_GITHUB_TOKEN=ghp_xxx       # a token with `repo` scope
 export NIMBUS_DRIVE_OWNER=your-username
 export NIMBUS_DRIVE_REPO=your-drive-repo
+export NIMBUS_DRIVE_BRANCH=main          # optional, defaults to "main"
 cargo run --release
 # -> nimbus listening on http://127.0.0.1:8080
 ```
 
-## API (Phase 1)
+## API
 
-| Method | Path                  | Description                          |
-| ------ | --------------------- | ------------------------------------ |
-| `GET`  | `/api/files`          | List files in the drive              |
-| `POST` | `/api/files/<path>`   | Upload (request body = raw bytes)    |
-| `GET`  | `/api/files/<path>`   | Download                             |
+| Method | Path                  | Description                                       |
+| ------ | --------------------- | ------------------------------------------------- |
+| `GET`  | `/api/files`          | List files (from the local cache)                 |
+| `POST` | `/api/files/<path>`   | Upload (body = raw bytes); commits to the branch  |
+| `GET`  | `/api/files/<path>`   | Download                                          |
+| `POST` | `/api/sync`           | Rebuild the cache from the branch's tree on GitHub |
+
+Uploads are durable: each one creates a blob **and** a commit on the configured
+branch, so files survive GitHub's garbage collection. `GET /api/files` reads the
+fast local cache; `POST /api/sync` reconciles it with the repo's actual tree.
 
 ## Architecture
 

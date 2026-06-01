@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use nimbus_core::DriveFile;
@@ -14,7 +14,16 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/files", get(list_files))
         .route("/api/files/*path", get(download_file).post(upload_file))
+        .route("/api/sync", post(sync_drive))
         .with_state(state)
+}
+
+async fn sync_drive(State(engine): State<AppState>) -> Result<StatusCode, StatusCode> {
+    engine
+        .sync()
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|_| StatusCode::BAD_GATEWAY)
 }
 
 async fn list_files(State(engine): State<AppState>) -> Result<Json<Vec<DriveFile>>, StatusCode> {
@@ -67,17 +76,47 @@ mod tests {
             .unwrap();
         sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
         let gh = nimbus_github::GitHubClient::new("tok", gh_uri);
-        Arc::new(StorageEngine::new(gh, pool, "me", "drive"))
+        Arc::new(StorageEngine::new(gh, pool, "me", "drive", "main"))
+    }
+
+    /// Mount every endpoint an upload touches (blob + the commit dance).
+    async fn mount_upload(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(wpath("/repos/me/drive/git/blobs"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"sha":"s1"})))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wpath("/repos/me/drive/git/ref/heads/main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"object":{"sha":"head1"}})))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wpath("/repos/me/drive/git/commits/head1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"tree":{"sha":"base"}})))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wpath("/repos/me/drive/git/trees"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"sha":"tree1"})))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wpath("/repos/me/drive/git/commits"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"sha":"commit1"})))
+            .mount(server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(wpath("/repos/me/drive/git/refs/heads/main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ref":"refs/heads/main"})))
+            .mount(server)
+            .await;
     }
 
     #[tokio::test]
     async fn upload_then_list_roundtrip() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(wpath("/repos/me/drive/git/blobs"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"sha":"s1"})))
-            .mount(&server)
-            .await;
+        mount_upload(&server).await;
 
         let app = router(test_engine(server.uri()).await);
 

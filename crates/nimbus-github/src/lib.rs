@@ -1,6 +1,10 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 
+mod git_data;
+
+pub use git_data::TreeFile;
+
 /// Encode raw bytes the way GitHub's create-blob endpoint expects.
 pub fn encode_blob(bytes: &[u8]) -> String {
     STANDARD.encode(bytes)
@@ -34,6 +38,35 @@ impl GitHubClient {
             base_url: base_url.into(),
             http: reqwest::Client::new(),
         }
+    }
+
+    /// Build a `GET` request with auth + user-agent headers preset.
+    pub(crate) fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        self.http
+            .get(url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("User-Agent", "nimbus")
+    }
+
+    /// Build a `POST` request with auth + user-agent headers preset.
+    pub(crate) fn post(&self, url: &str) -> reqwest::RequestBuilder {
+        self.http
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("User-Agent", "nimbus")
+    }
+
+    /// Build a `PATCH` request with auth + user-agent headers preset.
+    pub(crate) fn patch(&self, url: &str) -> reqwest::RequestBuilder {
+        self.http
+            .patch(url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("User-Agent", "nimbus")
+    }
+
+    /// The API root for a given repo, e.g. `<base>/repos/<owner>/<repo>`.
+    pub(crate) fn repo_url(&self, owner: &str, repo: &str) -> String {
+        format!("{}/repos/{}/{}", self.base_url, owner, repo)
     }
 
     /// Fetch and decode a blob's raw bytes by SHA.
