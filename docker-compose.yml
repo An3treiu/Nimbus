@@ -1,0 +1,59 @@
+# Production-ish Nimbus deployment for a private VPS:
+#   - nimbus: the app (single binary, UI embedded), bound on the internal network
+#   - caddy:  reverse proxy terminating HTTPS via Let's Encrypt automatically
+#
+# Quick start on a VPS with a domain pointed at it:
+#   cp .env.example .env   # fill in the values
+#   docker compose up -d
+# Then open https://<your-domain>.
+#
+# Required in .env: NIMBUS_DOMAIN, NIMBUS_DRIVE_OWNER, NIMBUS_DRIVE_REPO,
+# NIMBUS_ADMIN_TOKEN (a long random string). A GitHub token or OAuth client id
+# is needed for the drive itself.
+
+services:
+  nimbus:
+    build: .
+    # Or pull a published image instead of building:
+    # image: ghcr.io/an3treiu/nimbus:latest
+    environment:
+      NIMBUS_BIND_ADDR: 0.0.0.0:8080
+      NIMBUS_DATABASE_URL: sqlite:/data/nimbus.db?mode=rwc
+      NIMBUS_DRIVE_OWNER: ${NIMBUS_DRIVE_OWNER}
+      NIMBUS_DRIVE_REPO: ${NIMBUS_DRIVE_REPO}
+      NIMBUS_DRIVE_BRANCH: ${NIMBUS_DRIVE_BRANCH:-main}
+      # Auth is REQUIRED to bind publicly; compose fails if it's unset.
+      NIMBUS_ADMIN_TOKEN: ${NIMBUS_ADMIN_TOKEN:?set a strong NIMBUS_ADMIN_TOKEN}
+      NIMBUS_GITHUB_TOKEN: ${NIMBUS_GITHUB_TOKEN:-}
+      NIMBUS_GITHUB_CLIENT_ID: ${NIMBUS_GITHUB_CLIENT_ID:-}
+      NIMBUS_ENCRYPTION_PASSPHRASE: ${NIMBUS_ENCRYPTION_PASSPHRASE:-}
+      NIMBUS_RECOVERY_KEY_OUT: /data/recovery-key.txt
+      NIMBUS_AI_PROVIDER: ${NIMBUS_AI_PROVIDER:-}
+      NIMBUS_AI_API_KEY: ${NIMBUS_AI_API_KEY:-}
+      NIMBUS_AI_MODEL: ${NIMBUS_AI_MODEL:-}
+      NIMBUS_AI_CHAT_MODEL: ${NIMBUS_AI_CHAT_MODEL:-}
+    volumes:
+      - nimbus-data:/data
+    restart: unless-stopped
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      NIMBUS_DOMAIN: ${NIMBUS_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - nimbus
+    restart: unless-stopped
+
+volumes:
+  nimbus-data:
+  caddy-data:
+  caddy-config:

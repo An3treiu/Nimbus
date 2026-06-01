@@ -99,6 +99,19 @@ terminal (Vite proxies `/api` to the Rust server on `:8080`).
 - **PAT (simplest):** [github.com/settings/tokens](https://github.com/settings/tokens) → generate a token with the **`repo`** scope → set it as `NIMBUS_GITHUB_TOKEN`.
 - **OAuth (nicer):** register an OAuth App, set `NIMBUS_GITHUB_CLIENT_ID`, and click **Connect GitHub** in the UI — no token copy-pasting.
 
+## Deploy on a VPS
+
+Run Nimbus on your own server like ownCloud/Nextcloud — but as a single binary
+behind Caddy (automatic HTTPS), no PHP/DB/Redis. With Docker Compose:
+
+```bash
+cp .env.example .env   # set NIMBUS_DOMAIN, drive owner/repo, a strong NIMBUS_ADMIN_TOKEN
+docker compose up -d   # Caddy + Nimbus, HTTPS via Let's Encrypt
+```
+
+Nimbus **refuses to bind to a public address without `NIMBUS_ADMIN_TOKEN`**. Full
+guide: [`docs/DEPLOY.md`](docs/DEPLOY.md). Health check at `GET /healthz`.
+
 ## Configuration
 
 All configuration is via environment variables.
@@ -197,6 +210,12 @@ Tagging `vX.Y.Z` builds binaries for Linux/Windows/macOS and a Docker image
 | v3 | Desktop sync client, multi-user / teams |
 | v4 | Optional deploy module (PaaS-style) |
 
+## Business model
+
+Nimbus is open-source first: the self-hosted product is free and unrestricted.
+Planned revenue comes from a managed **Nimbus Cloud** and org/enterprise features
+— never from paywalling the core. See [`docs/PREMIUM.md`](docs/PREMIUM.md).
+
 ## License
 
-[MIT](LICENSE) © Nimbus contributors
+[MIT](LICENSE) © Nimbus contributors — a move to AGPLv3 is recommended (see `docs/PREMIUM.md`).

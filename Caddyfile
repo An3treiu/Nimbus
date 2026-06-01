@@ -1,0 +1,6 @@
+# Caddy automatically provisions and renews a Let's Encrypt TLS certificate
+# for NIMBUS_DOMAIN and reverse-proxies to the Nimbus container.
+{$NIMBUS_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy nimbus:8080
+}

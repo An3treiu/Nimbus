@@ -102,7 +102,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/device/start", post(auth_device_start))
         .route("/api/auth/device/poll", post(auth_device_poll))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
+        // Public, unauthenticated health check (added after the auth layer).
+        .route("/healthz", get(healthz))
         .with_state(state)
+}
+
+/// Liveness/readiness probe for load balancers and uptime monitors.
+async fn healthz() -> &'static str {
+    "ok"
 }
 
 /// Report whether in-app GitHub login (device flow) is available.
