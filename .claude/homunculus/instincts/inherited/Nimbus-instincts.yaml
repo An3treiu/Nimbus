@@ -1,0 +1,451 @@
+# Instincts generated from https://github.com/An3treiu/Nimbus
+# Generated: 2026-06-01T16:39:52.400Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: Nimbus-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/An3treiu/Nimbus
+---
+
+# Nimbus Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: feat
+
+## Evidence
+
+- 8 commits analyzed
+- Detected conventional commit pattern
+- Examples: feat(core): add workspace + DriveFile/FileKind/NimbusError types, feat(github): base64 blob encode/decode with line-wrap tolerance
+
+---
+id: Nimbus-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/An3treiu/Nimbus
+---
+
+# Nimbus Commit Length
+
+## Action
+
+Write moderate-length commit messages (~69 characters)
+
+## Evidence
+
+- Average commit message length: 69 chars
+- Based on 8 commits
+
+---
+id: Nimbus-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/An3treiu/Nimbus
+---
+
+# Nimbus Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: Nimbus-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/An3treiu/Nimbus
+---
+
+# Nimbus Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: Nimbus-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/An3treiu/Nimbus
+---
+
+# Nimbus Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: Nimbus-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/An3treiu/Nimbus
+---
+
+# Nimbus Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: Nimbus-workflow-feature-development
+trigger: "when implementing a new feature"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/An3treiu/Nimbus
+---
+
+# Nimbus Workflow Feature Development
+
+## Action
+
+Follow the feature-development workflow:
+1. Add feature implementation
+2. Add tests for feature
+3. Update documentation
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~30x per month
+- Files: **/api/**
+
+---
+id: Nimbus-workflow-add-or-update-crate-feature
+trigger: "when doing add or update crate feature"
+confidence: 0.65
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/An3treiu/Nimbus
+---
+
+# Nimbus Workflow Add Or Update Crate Feature
+
+## Action
+
+Follow the add-or-update-crate-feature workflow:
+1. Edit or add functionality in src/lib.rs
+2. Update dependencies or metadata in Cargo.toml
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~3x per month
+- Files: crates/*/Cargo.toml, crates/*/src/lib.rs
+
+---
+id: Nimbus-workflow-add-or-update-server-feature
+trigger: "when doing add or update server feature"
+confidence: 0.65
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/An3treiu/Nimbus
+---
+
+# Nimbus Workflow Add Or Update Server Feature
+
+## Action
+
+Follow the add-or-update-server-feature workflow:
+1. Edit or add functionality in src/lib.rs
+2. Update or add new modules (e.g., src/routes.rs, src/config.rs, src/cache.rs)
+3. Update src/main.rs to wire up new features
+4. Optionally update Cargo.toml for dependencies
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~3x per month
+- Files: crates/nimbus-server/src/lib.rs, crates/nimbus-server/src/main.rs, crates/nimbus-server/src/*.rs
+
+---
+id: nimbus-instinct-file-naming
+trigger: "When creating or renaming a file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct File Naming
+
+## Action
+
+Name the file using camelCase
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.files: camelCase
+
+---
+id: nimbus-instinct-function-naming
+trigger: "When defining a function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Function Naming
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.functions: camelCase
+
+---
+id: nimbus-instinct-class-naming
+trigger: "When defining a class or struct"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Class Naming
+
+## Action
+
+Name the class using PascalCase
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.classes: PascalCase
+
+---
+id: nimbus-instinct-constant-naming
+trigger: "When defining a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Constant Naming
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.constants: SCREAMING_SNAKE_CASE
+
+---
+id: nimbus-instinct-import-style
+trigger: "When importing modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Import Style
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in codeStyle.importStyle: relative
+
+---
+id: nimbus-instinct-export-style
+trigger: "When exporting modules or functions"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in codeStyle.exportStyle: named
+
+---
+id: nimbus-instinct-test-location
+trigger: "When adding tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Test Location
+
+## Action
+
+Place tests in a separate directory from source code
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation: separate
+
+---
+id: nimbus-instinct-test-feature
+trigger: "When implementing a new feature"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Test Feature
+
+## Action
+
+Add tests for the new feature after implementation
+
+## Evidence
+
+- feature-development workflow: Add tests for feature follows implementation
+- Seen in commits: feat(github): GitHubClient get_blob + create_blob over HTTP (wiremock-tested)
+
+---
+id: nimbus-instinct-git-commit-format
+trigger: "When writing a commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Git Commit Format
+
+## Action
+
+Use conventional commit format with 'feat' prefix for features
+
+## Evidence
+
+- commits.type: conventional
+- commits.prefixes: ["feat"]
+- Examples: feat(core): add workspace + DriveFile/FileKind/NimbusError types
+
+---
+id: nimbus-instinct-git-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Git Commit Length
+
+## Action
+
+Keep the commit message concise (average ~69 characters)
+
+## Evidence
+
+- commits.averageLength: 69
+
+---
+id: nimbus-instinct-workflow-new-crate-feature
+trigger: "When adding or updating a feature in a crate"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Workflow New Crate Feature
+
+## Action
+
+Edit or add functionality in src/lib.rs, then update Cargo.toml
+
+## Evidence
+
+- add-or-update-crate-feature workflow
+- Files involved: crates/*/src/lib.rs, crates/*/Cargo.toml
+
+---
+id: nimbus-instinct-workflow-new-server-feature
+trigger: "When adding or wiring up a new server-side feature"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Workflow New Server Feature
+
+## Action
+
+Edit src/lib.rs, update/add modules (e.g., src/routes.rs, src/config.rs), update src/main.rs, and optionally update Cargo.toml
+
+## Evidence
+
+- add-or-update-server-feature workflow
+- Files involved: crates/nimbus-server/src/lib.rs, src/main.rs, src/*.rs, Cargo.toml
+
+---
+id: nimbus-instinct-feature-dev-sequence
+trigger: "When developing a new feature"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: An3treiu/Nimbus
+---
+
+# Nimbus Instinct Feature Dev Sequence
+
+## Action
+
+Follow the sequence: implement feature → add tests → update documentation
+
+## Evidence
+
+- feature-development workflow.commitSequence: Add feature implementation, Add tests for feature, Update documentation
+
