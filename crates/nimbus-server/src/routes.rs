@@ -4,21 +4,37 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use nimbus_ai::ChatProvider;
 use nimbus_core::DriveFile;
+use nimbus_github::{poll_for_token, start_device_flow, DeviceCode, PollResult};
 use nimbus_search::{SearchHit, SearchIndex};
 use nimbus_storage::StorageEngine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sqlx::SqlitePool;
 use std::sync::Arc;
 
-/// Shared application state: the storage engine plus an optional search index.
+/// GitHub's OAuth host (device-flow endpoints live here, not on api.github.com).
+const GITHUB_OAUTH_BASE: &str = "https://github.com";
+
+/// Shared application state: the storage engine plus optional AI features.
 #[derive(Clone)]
 pub struct AppState {
     pub engine: Arc<StorageEngine>,
     pub search: Option<Arc<SearchIndex>>,
+    pub chat: Option<Arc<dyn ChatProvider>>,
+    /// Pool for persisting the OAuth token.
+    pub pool: SqlitePool,
+    /// OAuth App client id; `None` disables the device-flow endpoints.
+    pub github_client_id: Option<String>,
 }
 
 /// Largest file we attempt to index for semantic search (bytes).
 const MAX_INDEX_BYTES: usize = 100_000;
+/// How many top files to feed as context when chatting.
+const CHAT_CONTEXT_FILES: usize = 3;
+/// Max characters of each file included in the chat context.
+const CHAT_EXCERPT_CHARS: usize = 2000;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -26,7 +42,60 @@ pub fn router(state: AppState) -> Router {
         .route("/api/files/*path", get(download_file).post(upload_file))
         .route("/api/sync", post(sync_drive))
         .route("/api/search", get(search_files))
+        .route("/api/chat", post(chat))
+        .route("/api/auth/status", get(auth_status))
+        .route("/api/auth/device/start", post(auth_device_start))
+        .route("/api/auth/device/poll", post(auth_device_poll))
         .with_state(state)
+}
+
+/// Report whether in-app GitHub login (device flow) is available.
+async fn auth_status(State(st): State<AppState>) -> Json<Value> {
+    Json(json!({ "oauth_available": st.github_client_id.is_some() }))
+}
+
+/// Start the GitHub device flow; returns the user code + verification URL.
+async fn auth_device_start(State(st): State<AppState>) -> Result<Json<DeviceCode>, StatusCode> {
+    let client_id = st
+        .github_client_id
+        .as_ref()
+        .ok_or(StatusCode::NOT_IMPLEMENTED)?;
+    start_device_flow(GITHUB_OAUTH_BASE, client_id, "repo")
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::BAD_GATEWAY)
+}
+
+#[derive(Deserialize)]
+struct PollRequest {
+    device_code: String,
+}
+
+/// Poll the device flow once. On success, hot-swap the token and persist it.
+async fn auth_device_poll(
+    State(st): State<AppState>,
+    Json(req): Json<PollRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let client_id = st
+        .github_client_id
+        .as_ref()
+        .ok_or(StatusCode::NOT_IMPLEMENTED)?;
+    let result = poll_for_token(GITHUB_OAUTH_BASE, client_id, &req.device_code)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Ok(Json(match result {
+        PollResult::Authorized(token) => {
+            st.engine.set_github_token(&token);
+            if let Err(e) = crate::tokens::save_token(&st.pool, &token).await {
+                eprintln!("nimbus: failed to persist OAuth token: {e}");
+            }
+            json!({ "status": "authorized" })
+        }
+        PollResult::Pending => json!({ "status": "pending" }),
+        PollResult::SlowDown => json!({ "status": "slow_down" }),
+        PollResult::Denied => json!({ "status": "denied" }),
+        PollResult::Failed(e) => json!({ "status": "error", "error": e }),
+    }))
 }
 
 async fn list_files(State(st): State<AppState>) -> Result<Json<Vec<DriveFile>>, StatusCode> {
@@ -99,6 +168,61 @@ async fn search_files(
         .map_err(|_| StatusCode::BAD_GATEWAY)
 }
 
+#[derive(Deserialize)]
+struct ChatRequest {
+    question: String,
+}
+
+#[derive(Serialize)]
+struct ChatResponse {
+    answer: String,
+    sources: Vec<String>,
+}
+
+/// "Chat with your files": retrieve the most relevant files (if search is
+/// enabled), feed their excerpts as context, and ask the chat provider.
+async fn chat(
+    State(st): State<AppState>,
+    Json(req): Json<ChatRequest>,
+) -> Result<Json<ChatResponse>, StatusCode> {
+    let provider = st.chat.as_ref().ok_or(StatusCode::NOT_IMPLEMENTED)?;
+
+    // Retrieve relevant files for context (best-effort).
+    let mut context = String::new();
+    let mut sources = Vec::new();
+    if let Some(search) = &st.search {
+        if let Ok(hits) = search
+            .search(&st.engine.drive_id(), &req.question, CHAT_CONTEXT_FILES)
+            .await
+        {
+            for hit in hits {
+                if let Ok(bytes) = st.engine.download(&hit.path).await {
+                    if let Ok(text) = std::str::from_utf8(&bytes) {
+                        let excerpt: String = text.chars().take(CHAT_EXCERPT_CHARS).collect();
+                        context.push_str(&format!("--- File: {}\n{}\n\n", hit.path, excerpt));
+                        sources.push(hit.path);
+                    }
+                }
+            }
+        }
+    }
+
+    let system = "You are Nimbus, an assistant that answers questions about the \
+        user's files. Use the provided file excerpts as context. If the context \
+        is insufficient, say so. Cite file paths you used.";
+    let user = if context.is_empty() {
+        format!("Question: {}", req.question)
+    } else {
+        format!("File excerpts:\n{context}\nQuestion: {}", req.question)
+    };
+
+    let answer = provider
+        .chat(system, &user)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Ok(Json(ChatResponse { answer, sources }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,7 +230,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
-    use nimbus_ai::{AiError, AiProvider, Embedding};
+    use nimbus_ai::{AiError, AiProvider, ChatProvider, Embedding};
     use serde_json::json;
     use tower::ServiceExt;
     use wiremock::matchers::{method, path as wpath};
@@ -126,8 +250,11 @@ mod tests {
         let pool = memory_pool().await;
         let gh = nimbus_github::GitHubClient::new("tok", gh_uri);
         AppState {
-            engine: Arc::new(StorageEngine::new(gh, pool, "me", "drive", "main")),
+            engine: Arc::new(StorageEngine::new(gh, pool.clone(), "me", "drive", "main")),
             search,
+            chat: None,
+            pool,
+            github_client_id: None,
         }
     }
 
@@ -140,7 +267,9 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(wpath("/repos/me/drive/git/ref/heads/main"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"object":{"sha":"head1"}})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"object":{"sha":"head1"}})),
+            )
             .mount(server)
             .await;
         Mock::given(method("GET"))
@@ -160,7 +289,9 @@ mod tests {
             .await;
         Mock::given(method("PATCH"))
             .and(wpath("/repos/me/drive/git/refs/heads/main"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ref":"refs/heads/main"})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"ref":"refs/heads/main"})),
+            )
             .mount(server)
             .await;
     }
@@ -185,7 +316,12 @@ mod tests {
         assert_eq!(up.status(), StatusCode::OK);
 
         let resp = app
-            .oneshot(Request::builder().uri("/api/files").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -200,7 +336,12 @@ mod tests {
         let server = MockServer::start().await;
         let app = router(test_state(server.uri(), None).await);
         let resp = app
-            .oneshot(Request::builder().uri("/api/files/nope.txt").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files/nope.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -211,7 +352,12 @@ mod tests {
         let server = MockServer::start().await;
         let app = router(test_state(server.uri(), None).await);
         let resp = app
-            .oneshot(Request::builder().uri("/api/search?q=cat").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/search?q=cat")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
@@ -226,8 +372,16 @@ mod tests {
             Ok(texts
                 .iter()
                 .map(|t| {
-                    let cat = if t.to_lowercase().contains("cat") { 1.0 } else { 0.0 };
-                    let dog = if t.to_lowercase().contains("dog") { 1.0 } else { 0.0 };
+                    let cat = if t.to_lowercase().contains("cat") {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    let dog = if t.to_lowercase().contains("dog") {
+                        1.0
+                    } else {
+                        0.0
+                    };
                     vec![cat, dog]
                 })
                 .collect())
@@ -241,8 +395,14 @@ mod tests {
         let pool = memory_pool().await;
         let gh = nimbus_github::GitHubClient::new("tok", server.uri());
         let engine = Arc::new(StorageEngine::new(gh, pool.clone(), "me", "drive", "main"));
-        let search = Arc::new(SearchIndex::new(pool, Arc::new(FakeProvider)));
-        let app = router(AppState { engine, search: Some(search) });
+        let search = Arc::new(SearchIndex::new(pool.clone(), Arc::new(FakeProvider)));
+        let app = router(AppState {
+            engine,
+            search: Some(search),
+            chat: None,
+            pool,
+            github_client_id: None,
+        });
 
         // Upload a text file -> it should be indexed.
         let up = app
@@ -260,7 +420,12 @@ mod tests {
 
         // Search should find it.
         let resp = app
-            .oneshot(Request::builder().uri("/api/search?q=cat").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/search?q=cat")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -268,5 +433,63 @@ mod tests {
         let hits: Vec<SearchHit> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].path, "pet.txt");
+    }
+
+    struct FakeChat;
+
+    #[async_trait]
+    impl ChatProvider for FakeChat {
+        async fn chat(&self, _system: &str, _user: &str) -> std::result::Result<String, AiError> {
+            Ok("stub answer".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_without_provider_returns_501() {
+        let server = MockServer::start().await;
+        let app = router(test_state(server.uri(), None).await);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/chat")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"question":"hi"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn chat_with_provider_returns_answer() {
+        let server = MockServer::start().await;
+        let pool = memory_pool().await;
+        let gh = nimbus_github::GitHubClient::new("tok", server.uri());
+        let engine = Arc::new(StorageEngine::new(gh, pool.clone(), "me", "drive", "main"));
+        let app = router(AppState {
+            engine,
+            search: None,
+            chat: Some(Arc::new(FakeChat)),
+            pool,
+            github_client_id: None,
+        });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/chat")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"question":"what is in my files?"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["answer"], "stub answer");
     }
 }

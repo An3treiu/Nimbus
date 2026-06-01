@@ -1,117 +1,202 @@
-# Nimbus 🌥️
+<div align="center">
 
-Self-hosted, privacy-first cloud drive backed by your own GitHub repositories,
-with pluggable AI (bring your own key or a fully local model).
+# 🌥️ Nimbus
 
-**Your data, your infrastructure, your AI.**
+**A self-hosted, privacy-first cloud drive that stores your files in your own GitHub repositories — with bring-your-own AI.**
 
-> Status: early development (Phase 1 — foundation). See [`docs/specs/`](docs/specs/)
-> for the design and [`docs/plans/`](docs/plans/) for the roadmap.
+*Your data. Your infrastructure. Your AI.*
+
+[![CI](https://github.com/An3treiu/Nimbus/actions/workflows/ci.yml/badge.svg)](https://github.com/An3treiu/Nimbus/actions/workflows/ci.yml)
+&nbsp;·&nbsp; Rust + Svelte &nbsp;·&nbsp; MIT licensed
+
+</div>
+
+---
+
+Nimbus is a personal cloud drive (think Google Drive / Dropbox) that you run on your
+own machine or server. Instead of a proprietary backend, it stores your files in a
+**GitHub repository you control** — versioned, durable, and portable. Files are
+**encrypted on your machine** before they ever leave it, and AI features run through
+the provider *you* choose (or a fully local model). No telemetry. No middlemen.
 
 ## Why Nimbus?
 
-Nimbus sits at an intersection no mature product covers today:
+No mature product today sits where Nimbus does — at the intersection of three things:
 
-- **Self-hosted + privacy-first** — runs locally or on *your* server. No telemetry, no third parties.
-- **GitHub-backed storage** — files live in your own GitHub repos: durable, versioned, portable.
-- **AI-native, bring-your-own** — semantic search (and later, chat over your files) powered by
-  the provider *you* choose: Anthropic, OpenAI, Google, or a local model via Ollama.
+| | |
+|---|---|
+| 🔒 **Privacy-first & self-hosted** | Runs locally or on your server. Zero telemetry, zero third parties. |
+| 🐙 **GitHub-backed storage** | Files live in *your* repos: free, durable, version-controlled, portable. |
+| 🤖 **AI-native, bring-your-own** | Semantic search & "chat with your files" via OpenAI, Google, Ollama, or Anthropic — your key, your model. |
 
-## Run (Phase 1 skeleton)
+## Features
+
+- 📁 **Drive UI** — browse, drag-and-drop upload, download, in-browser preview (images, text, Markdown, PDF).
+- 🔐 **Zero-knowledge encryption** — AES-256-GCM with envelope encryption (Argon2id). GitHub only ever sees ciphertext. One-time recovery key.
+- 🧩 **Durable storage** — every upload is a real Git commit, so files survive garbage collection. `Sync` reconciles the local cache with the repo.
+- 📦 **Large files** — automatically chunked past GitHub's per-blob limit, transparently reassembled on download.
+- 🔎 **Semantic search** — find files by meaning, not just filename (embeddings + cosine similarity).
+- 💬 **Chat with your files** — retrieval-augmented Q&A over your documents.
+- 🔗 **One-click GitHub login** — OAuth device flow, no PAT juggling (or use a PAT if you prefer).
+- 🦀 **Single binary** — the frontend is embedded; ship one self-contained executable. Docker image too.
+
+## Quick start
+
+### Option A — Docker (easiest)
 
 ```bash
-export NIMBUS_GITHUB_TOKEN=ghp_xxx       # a token with `repo` scope
+docker run -d --name nimbus -p 8080:8080 -v nimbus-data:/data \
+  -e NIMBUS_GITHUB_TOKEN=ghp_your_token \
+  -e NIMBUS_DRIVE_OWNER=your-username \
+  -e NIMBUS_DRIVE_REPO=your-drive-repo \
+  ghcr.io/an3treiu/nimbus:latest
+# open http://localhost:8080
+```
+
+### Option B — Prebuilt binary
+
+Download the binary for your OS from the [Releases](https://github.com/An3treiu/Nimbus/releases)
+page, then:
+
+```bash
+export NIMBUS_GITHUB_TOKEN=ghp_your_token
 export NIMBUS_DRIVE_OWNER=your-username
 export NIMBUS_DRIVE_REPO=your-drive-repo
-export NIMBUS_DRIVE_BRANCH=main          # optional, defaults to "main"
-export NIMBUS_ENCRYPTION_PASSPHRASE=...  # optional: enables client-side encryption
-export NIMBUS_AI_PROVIDER=ollama         # optional: "openai" | "ollama" for search
-export NIMBUS_AI_MODEL=nomic-embed-text  # optional: embedding model
+./nimbus            # Windows: nimbus.exe
+# open http://localhost:8080
+```
+
+The frontend is embedded in the binary — nothing else to install.
+
+### Option C — From source (local development)
+
+Prerequisites: [Rust](https://rustup.rs) (stable) and [Node.js](https://nodejs.org) 20+.
+
+```bash
+git clone https://github.com/An3treiu/Nimbus.git
+cd Nimbus
+
+# 1. Build the web UI (embedded into the binary at compile time)
+cd web && npm install && npm run build && cd ..
+
+# 2. Configure (a GitHub token with the `repo` scope)
+export NIMBUS_GITHUB_TOKEN=ghp_your_token
+export NIMBUS_DRIVE_OWNER=your-username
+export NIMBUS_DRIVE_REPO=your-drive-repo
+
+# 3. Run
 cargo run --release
 # -> nimbus listening on http://127.0.0.1:8080
 ```
 
-## Web UI
+> **Windows / PowerShell:** use `$env:NIMBUS_GITHUB_TOKEN = "ghp_..."` instead of `export`.
 
-Nimbus ships a Svelte web UI (file browser, drag-and-drop upload, download,
-semantic search). Build it once, and the server serves it on the same port:
+**Frontend hot-reload during development:** run `cd web && npm run dev` in a second
+terminal (Vite proxies `/api` to the Rust server on `:8080`).
 
-```bash
-cd web && npm install && npm run build && cd ..
-cargo run --release
-# open http://127.0.0.1:8080
-```
+### Getting a GitHub token
 
-For frontend development with hot reload: `cd web && npm run dev` (Vite proxies
-`/api` to the Rust server on :8080). Override the served directory with
-`NIMBUS_WEB_DIR`.
+- **PAT (simplest):** [github.com/settings/tokens](https://github.com/settings/tokens) → generate a token with the **`repo`** scope → set it as `NIMBUS_GITHUB_TOKEN`.
+- **OAuth (nicer):** register an OAuth App, set `NIMBUS_GITHUB_CLIENT_ID`, and click **Connect GitHub** in the UI — no token copy-pasting.
+
+## Configuration
+
+All configuration is via environment variables.
+
+| Variable | Required | Default | Description |
+| --- | :---: | --- | --- |
+| `NIMBUS_DRIVE_OWNER` | ✅ | — | GitHub user/org that owns the drive repo |
+| `NIMBUS_DRIVE_REPO` | ✅ | — | Repository used as the drive |
+| `NIMBUS_GITHUB_TOKEN` | — | — | GitHub PAT (`repo` scope). Optional if using OAuth |
+| `NIMBUS_GITHUB_CLIENT_ID` | — | — | OAuth App client id → enables in-app **Connect GitHub** |
+| `NIMBUS_DRIVE_BRANCH` | — | `main` | Branch to store files on |
+| `NIMBUS_ENCRYPTION_PASSPHRASE` | — | — | Enables client-side encryption when set |
+| `NIMBUS_RECOVERY_KEY` | — | — | Unlock the vault if the passphrase is lost |
+| `NIMBUS_RECOVERY_KEY_OUT` | — | — | Write the first-run recovery key to this file |
+| `NIMBUS_AI_PROVIDER` | — | — | `openai` \| `ollama` \| `anthropic` (enables AI) |
+| `NIMBUS_AI_API_KEY` | — | — | API key for the chosen provider |
+| `NIMBUS_AI_BASE_URL` | — | per-provider | Override the provider endpoint |
+| `NIMBUS_AI_MODEL` | — | per-provider | Embedding model (for search) |
+| `NIMBUS_AI_CHAT_MODEL` | — | per-provider | Chat model (for chat-with-files) |
+| `NIMBUS_BIND_ADDR` | — | `127.0.0.1:8080` | Listen address |
+| `NIMBUS_DATABASE_URL` | — | `sqlite:nimbus.db?mode=rwc` | Local cache DB |
+| `NIMBUS_WEB_DIR` | — | *(embedded)* | Serve the UI from a directory instead of the embedded copy |
 
 ## Encryption (zero-knowledge)
 
-Set `NIMBUS_ENCRYPTION_PASSPHRASE` to encrypt every file client-side with
-AES-256-GCM before it ever reaches GitHub. Nimbus uses **envelope encryption**:
-a random data key (DEK) encrypts files and is itself wrapped by both a key
-derived from your passphrase (Argon2id) and a one-time **recovery key** printed
-on first run. GitHub only ever stores ciphertext; the keys never leave your
-machine. Lose both the passphrase and the recovery key and the data is gone —
-that is the point. Encryption binds each file's path as AES-GCM associated data,
-so a ciphertext cannot be silently moved to another path. Set
-`NIMBUS_RECOVERY_KEY` to unlock with the recovery key if the passphrase is lost,
-and `NIMBUS_RECOVERY_KEY_OUT` to write the first-run key to a file instead of stdout.
+Set `NIMBUS_ENCRYPTION_PASSPHRASE` to encrypt every file client-side with AES-256-GCM
+before it touches GitHub. Nimbus uses **envelope encryption**: a random data key (DEK)
+encrypts files and is itself wrapped by both a key derived from your passphrase
+(Argon2id) and a one-time **recovery key** shown on first run. Each file's path is
+bound as AES-GCM associated data, so ciphertext can't be silently moved between paths.
 
-## Semantic search (bring your own AI)
+> ⚠️ Lose **both** the passphrase and the recovery key and your data is unrecoverable — that's the point of zero-knowledge.
 
-Set `NIMBUS_AI_PROVIDER` to `openai` (any OpenAI-compatible endpoint — OpenAI,
-Google, LM Studio, llama.cpp) or `ollama` (fully local). Text files are embedded
-on upload and ranked by cosine similarity at query time. Embeddings are computed
-from plaintext **before** encryption, so search works on encrypted drives. Your
-key/model are used directly — Nimbus never proxies AI through its own servers.
+## AI (bring your own)
 
-| Env var | Purpose |
-| ------- | ------- |
-| `NIMBUS_AI_PROVIDER` | `openai` or `ollama` |
-| `NIMBUS_AI_BASE_URL` | endpoint (defaults per provider) |
-| `NIMBUS_AI_API_KEY`  | key for OpenAI-compatible providers |
-| `NIMBUS_AI_MODEL`    | embedding model |
+| Provider | Search (embeddings) | Chat | Notes |
+| --- | :---: | :---: | --- |
+| `openai` | ✅ | ✅ | Any OpenAI-compatible endpoint (OpenAI, Google, LM Studio, llama.cpp) |
+| `ollama` | ✅ | ✅ | Fully local — nothing leaves your machine |
+| `anthropic` | — | ✅ | Claude for chat; pair with openai/ollama for search |
+
+Embeddings are computed from plaintext **before** encryption, so search and chat work
+even on encrypted drives. Your key/model talk to your provider directly — Nimbus never
+proxies AI through its own servers.
 
 ## API
 
-| Method | Path                  | Description                                       |
-| ------ | --------------------- | ------------------------------------------------- |
-| `GET`  | `/api/files`          | List files (from the local cache)                 |
-| `POST` | `/api/files/<path>`   | Upload (body = raw bytes); commits to the branch  |
-| `GET`  | `/api/files/<path>`   | Download                                          |
-| `POST` | `/api/sync`           | Rebuild the cache from the branch's tree on GitHub |
-| `GET`  | `/api/search?q=&k=`   | Semantic search over indexed files (501 if AI off) |
-
-Uploads are durable: each one creates a blob **and** a commit on the configured
-branch, so files survive GitHub's garbage collection. `GET /api/files` reads the
-fast local cache; `POST /api/sync` reconciles it with the repo's actual tree.
-
-Large files (over ~50 MB) are automatically split into chunk blobs plus a
-manifest, transparently bypassing GitHub's per-blob size limit; downloads
-reassemble them. Each chunk is encrypted independently when encryption is on.
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/files` | List files (from the local cache) |
+| `POST` | `/api/files/<path>` | Upload (body = raw bytes); commits to the branch |
+| `GET` | `/api/files/<path>` | Download |
+| `POST` | `/api/sync` | Rebuild the cache from the repo's tree |
+| `GET` | `/api/search?q=&k=` | Semantic search (`501` if AI is off) |
+| `POST` | `/api/chat` | Chat with your files (`501` if AI is off) |
+| `POST` | `/api/auth/device/start` | Begin GitHub OAuth device flow |
+| `POST` | `/api/auth/device/poll` | Poll for the OAuth token |
 
 ## Architecture
 
-A Cargo workspace of focused crates:
+A Cargo workspace of small, focused crates:
 
-- `nimbus-core` — shared types & errors (no I/O)
-- `nimbus-github` — thin GitHub Git Data API client
-- `nimbus-storage` — maps the drive model onto GitHub blobs + a local SQLite cache
-- `nimbus-server` — Axum HTTP server, config, cache, routes
+```
+nimbus-core      shared types & errors (no I/O)
+nimbus-github    GitHub Git Data API client + OAuth device flow
+nimbus-crypto    AES-256-GCM, Argon2id, envelope encryption, Vault
+nimbus-storage   the drive model: blobs ⇄ commits, chunking, encryption, cache
+nimbus-ai        AiProvider/ChatProvider traits + OpenAI/Ollama/Anthropic
+nimbus-search    embeddings index + cosine search (SQLite)
+nimbus-server    Axum HTTP API, config, embedded web UI
+web/             Svelte 5 + Vite frontend
+```
 
-GitHub is the source of truth; SQLite is a rebuildable local cache.
+GitHub is the source of truth; SQLite is a rebuildable local cache. The whole thing
+compiles to a single binary with the UI baked in.
+
+## Development
+
+```bash
+cargo test --all        # run the full test suite
+cargo fmt --all         # format
+cargo clippy --all-targets
+cd web && npm run dev   # frontend with hot reload
+```
+
+CI runs format, clippy, tests and a release build on every push (`.github/workflows/ci.yml`).
+Tagging `vX.Y.Z` builds binaries for Linux/Windows/macOS and a Docker image
+(`.github/workflows/release.yml`).
 
 ## Roadmap
 
-| Version | Theme                    |
-| ------- | ------------------------ |
-| v1      | Core drive + AI search   |
-| v2      | AI chat + collaboration  |
-| v3      | Sync + multi-user        |
-| v4      | Deploy module            |
+| Version | Theme |
+| --- | --- |
+| ✅ v1 | Core drive · durable commits · encryption · semantic search · chat · large files · web UI · OAuth |
+| v2 | Streaming chat, file sharing links, auto-tagging |
+| v3 | Desktop sync client, multi-user / teams |
+| v4 | Optional deploy module (PaaS-style) |
 
 ## License
 
-MIT
+[MIT](LICENSE) © Nimbus contributors

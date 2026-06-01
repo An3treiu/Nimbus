@@ -36,7 +36,10 @@ impl SearchIndex {
             .embed(&[text.to_string()])
             .await
             .map_err(|e| NimbusError::Ai(e.to_string()))?;
-        let vector = vectors.into_iter().next().ok_or(NimbusError::Ai("no embedding returned".into()))?;
+        let vector = vectors
+            .into_iter()
+            .next()
+            .ok_or(NimbusError::Ai("no embedding returned".into()))?;
         let json = serde_json::to_string(&vector).map_err(|e| NimbusError::Ai(e.to_string()))?;
         sqlx::query("INSERT OR REPLACE INTO embeddings (drive, path, vector) VALUES (?, ?, ?)")
             .bind(drive)
@@ -90,7 +93,11 @@ impl SearchIndex {
             .collect();
 
         // Sort by score descending (NaN-safe: treat unordered as equal).
-        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         hits.truncate(top_k);
         Ok(hits)
     }
@@ -111,8 +118,16 @@ mod tests {
             Ok(texts
                 .iter()
                 .map(|t| {
-                    let cat = if t.to_lowercase().contains("cat") { 1.0 } else { 0.0 };
-                    let dog = if t.to_lowercase().contains("dog") { 1.0 } else { 0.0 };
+                    let cat = if t.to_lowercase().contains("cat") {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    let dog = if t.to_lowercase().contains("dog") {
+                        1.0
+                    } else {
+                        0.0
+                    };
                     vec![cat, dog]
                 })
                 .collect())
@@ -132,8 +147,14 @@ mod tests {
     #[tokio::test]
     async fn search_ranks_relevant_file_first() {
         let index = SearchIndex::new(memory_pool().await, Arc::new(FakeProvider));
-        index.index_file("d", "cat.txt", "i love my cat").await.unwrap();
-        index.index_file("d", "dog.txt", "the dog barks").await.unwrap();
+        index
+            .index_file("d", "cat.txt", "i love my cat")
+            .await
+            .unwrap();
+        index
+            .index_file("d", "dog.txt", "the dog barks")
+            .await
+            .unwrap();
 
         let hits = index.search("d", "a fluffy cat", 5).await.unwrap();
         assert_eq!(hits.len(), 2);

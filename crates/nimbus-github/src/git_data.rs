@@ -54,7 +54,10 @@ async fn json_or_err<T: DeserializeOwned>(req: reqwest::RequestBuilder, ctx: &st
         .await
         .map_err(|e| NimbusError::GitHub(format!("{ctx}: {e}")))?;
     if !resp.status().is_success() {
-        return Err(NimbusError::GitHub(format!("{ctx}: status {}", resp.status())));
+        return Err(NimbusError::GitHub(format!(
+            "{ctx}: status {}",
+            resp.status()
+        )));
     }
     resp.json()
         .await
@@ -63,7 +66,12 @@ async fn json_or_err<T: DeserializeOwned>(req: reqwest::RequestBuilder, ctx: &st
 
 impl GitHubClient {
     /// The commit SHA a branch points at, or `None` if the branch doesn't exist (404).
-    pub async fn get_branch_head(&self, owner: &str, repo: &str, branch: &str) -> Result<Option<String>> {
+    pub async fn get_branch_head(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> Result<Option<String>> {
         let url = format!("{}/git/ref/heads/{}", self.repo_url(owner, repo), branch);
         let resp = self
             .get(&url)
@@ -87,7 +95,12 @@ impl GitHubClient {
     }
 
     /// The tree SHA referenced by a commit.
-    pub async fn get_commit_tree(&self, owner: &str, repo: &str, commit_sha: &str) -> Result<String> {
+    pub async fn get_commit_tree(
+        &self,
+        owner: &str,
+        repo: &str,
+        commit_sha: &str,
+    ) -> Result<String> {
         let url = format!("{}/git/commits/{}", self.repo_url(owner, repo), commit_sha);
         let body: CommitResponse = json_or_err(self.get(&url), "get_commit_tree").await?;
         Ok(body.tree.sha)
@@ -133,18 +146,33 @@ impl GitHubClient {
     }
 
     /// Move an existing branch ref to `commit_sha`.
-    pub async fn update_branch(&self, owner: &str, repo: &str, branch: &str, commit_sha: &str) -> Result<()> {
+    pub async fn update_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        commit_sha: &str,
+    ) -> Result<()> {
         let url = format!("{}/git/refs/heads/{}", self.repo_url(owner, repo), branch);
         let payload = serde_json::json!({ "sha": commit_sha, "force": false });
-        let _: serde_json::Value = json_or_err(self.patch(&url).json(&payload), "update_branch").await?;
+        let _: serde_json::Value =
+            json_or_err(self.patch(&url).json(&payload), "update_branch").await?;
         Ok(())
     }
 
     /// Create a new branch ref pointing at `commit_sha`.
-    pub async fn create_branch(&self, owner: &str, repo: &str, branch: &str, commit_sha: &str) -> Result<()> {
+    pub async fn create_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        commit_sha: &str,
+    ) -> Result<()> {
         let url = format!("{}/git/refs", self.repo_url(owner, repo));
-        let payload = serde_json::json!({ "ref": format!("refs/heads/{branch}"), "sha": commit_sha });
-        let _: serde_json::Value = json_or_err(self.post(&url).json(&payload), "create_branch").await?;
+        let payload =
+            serde_json::json!({ "ref": format!("refs/heads/{branch}"), "sha": commit_sha });
+        let _: serde_json::Value =
+            json_or_err(self.post(&url).json(&payload), "create_branch").await?;
         Ok(())
     }
 
@@ -162,7 +190,9 @@ impl GitHubClient {
         match self.get_branch_head(owner, repo, branch).await? {
             Some(head) => {
                 let base_tree = self.get_commit_tree(owner, repo, &head).await?;
-                let tree = self.create_tree(owner, repo, Some(&base_tree), path, blob_sha).await?;
+                let tree = self
+                    .create_tree(owner, repo, Some(&base_tree), path, blob_sha)
+                    .await?;
                 let commit = self
                     .create_commit(owner, repo, message, &tree, &[head])
                     .await?;
@@ -258,7 +288,9 @@ mod tests {
         // 5. update ref
         Mock::given(method("PATCH"))
             .and(path("/repos/me/drive/git/refs/heads/main"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "ref": "refs/heads/main" })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "ref": "refs/heads/main" })),
+            )
             .mount(&server)
             .await;
 
@@ -290,7 +322,9 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/repos/me/drive/git/refs"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "ref": "refs/heads/main" })))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(json!({ "ref": "refs/heads/main" })),
+            )
             .mount(&server)
             .await;
 
@@ -334,8 +368,22 @@ mod tests {
         let client = GitHubClient::new("tok", server.uri());
         let files = client.list_tree("me", "drive", "main").await.unwrap();
         assert_eq!(files.len(), 2);
-        assert_eq!(files[0], TreeFile { path: "docs/a.md".into(), sha: "b1".into(), size: 10 });
-        assert_eq!(files[1], TreeFile { path: "b.txt".into(), sha: "b2".into(), size: 3 });
+        assert_eq!(
+            files[0],
+            TreeFile {
+                path: "docs/a.md".into(),
+                sha: "b1".into(),
+                size: 10
+            }
+        );
+        assert_eq!(
+            files[1],
+            TreeFile {
+                path: "b.txt".into(),
+                sha: "b2".into(),
+                size: 3
+            }
+        );
     }
 
     #[tokio::test]

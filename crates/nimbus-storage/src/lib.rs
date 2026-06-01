@@ -97,6 +97,11 @@ impl StorageEngine {
         self.drive_key()
     }
 
+    /// Replace the GitHub access token at runtime (after OAuth login).
+    pub fn set_github_token(&self, token: impl Into<String>) {
+        self.gh.set_token(token);
+    }
+
     /// Store file content as one or more blobs and return the SHA to commit at
     /// `path`. Small files become a single (optionally encrypted) blob; large
     /// files are split into chunk blobs plus a manifest blob.
@@ -108,7 +113,11 @@ impl StorageEngine {
         let mut chunks = Vec::new();
         for chunk in bytes.chunks(self.chunk_size) {
             let stored = self.seal(path, chunk)?;
-            chunks.push(self.gh.create_blob(&self.owner, &self.repo, &stored).await?);
+            chunks.push(
+                self.gh
+                    .create_blob(&self.owner, &self.repo, &stored)
+                    .await?,
+            );
         }
         let manifest = Manifest {
             size: bytes.len() as u64,
@@ -148,7 +157,10 @@ impl StorageEngine {
     /// Refresh the cache from the branch's actual tree on GitHub.
     /// GitHub is the source of truth; this rebuilds the local view.
     pub async fn sync(&self) -> Result<()> {
-        let files = self.gh.list_tree(&self.owner, &self.repo, &self.branch).await?;
+        let files = self
+            .gh
+            .list_tree(&self.owner, &self.repo, &self.branch)
+            .await?;
         let mut tx = self
             .pool
             .begin()
@@ -272,12 +284,16 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(wpath("/repos/me/drive/git/ref/heads/main"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "object": { "sha": "head1" } })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "object": { "sha": "head1" } })),
+            )
             .mount(server)
             .await;
         Mock::given(method("GET"))
             .and(wpath("/repos/me/drive/git/commits/head1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "tree": { "sha": "base" } })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "tree": { "sha": "base" } })),
+            )
             .mount(server)
             .await;
         Mock::given(method("POST"))
@@ -292,7 +308,9 @@ mod tests {
             .await;
         Mock::given(method("PATCH"))
             .and(wpath("/repos/me/drive/git/refs/heads/main"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "ref": "refs/heads/main" })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "ref": "refs/heads/main" })),
+            )
             .mount(server)
             .await;
     }
@@ -371,12 +389,16 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(wpath("/repos/me/drive/git/ref/heads/main"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "object": { "sha": "h1" } })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "object": { "sha": "h1" } })),
+            )
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(wpath("/repos/me/drive/git/commits/h1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "tree": { "sha": "tr1" } })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "tree": { "sha": "tr1" } })),
+            )
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -425,7 +447,10 @@ mod tests {
 
         assert_ne!(ciphertext, b"classified", "GitHub must never see plaintext");
         // The ciphertext is bound to the path via AAD.
-        assert_eq!(vault.open(b"secret.txt", &ciphertext).unwrap(), b"classified");
+        assert_eq!(
+            vault.open(b"secret.txt", &ciphertext).unwrap(),
+            b"classified"
+        );
     }
 
     #[tokio::test]
@@ -500,23 +525,27 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(wpath("/repos/me/drive/git/blobs/man"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                json!({ "content": nimbus_github::encode_blob(&manifest_blob) }),
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    json!({ "content": nimbus_github::encode_blob(&manifest_blob) }),
+                ),
+            )
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(wpath("/repos/me/drive/git/blobs/c0"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                json!({ "content": nimbus_github::encode_blob(b"AAAA") }),
-            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "content": nimbus_github::encode_blob(b"AAAA") })),
+            )
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(wpath("/repos/me/drive/git/blobs/c1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                json!({ "content": nimbus_github::encode_blob(b"BB") }),
-            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "content": nimbus_github::encode_blob(b"BB") })),
+            )
             .mount(&server)
             .await;
 

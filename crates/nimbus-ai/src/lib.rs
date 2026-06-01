@@ -6,9 +6,16 @@
 
 mod providers;
 
-pub use providers::{OllamaProvider, OpenAiProvider};
+pub use providers::{AnthropicProvider, OllamaProvider, OpenAiProvider};
 
 use async_trait::async_trait;
+
+/// A provider that can answer a chat prompt (used for "chat with your files").
+#[async_trait]
+pub trait ChatProvider: Send + Sync {
+    /// Given a system instruction and a user message, return the model's reply.
+    async fn chat(&self, system: &str, user: &str) -> Result<String, AiError>;
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AiError {

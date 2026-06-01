@@ -66,12 +66,22 @@ pub fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], Crypto
 /// Output is `nonce || ciphertext+tag`. The same `aad` must be supplied to
 /// decrypt — binding e.g. a file path here prevents ciphertext substitution
 /// across paths.
-pub fn encrypt_aad(key: &[u8; KEY_LEN], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub fn encrypt_aad(
+    key: &[u8; KEY_LEN],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce_bytes = random_array::<NONCE_LEN>();
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, Payload { msg: plaintext, aad })
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| CryptoError::Encrypt)?;
     let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     out.extend_from_slice(&nonce_bytes);
@@ -87,7 +97,13 @@ pub fn decrypt_aad(key: &[u8; KEY_LEN], data: &[u8], aad: &[u8]) -> Result<Vec<u
     let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     cipher
-        .decrypt(Nonce::from_slice(nonce_bytes), Payload { msg: ciphertext, aad })
+        .decrypt(
+            Nonce::from_slice(nonce_bytes),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|_| CryptoError::Decrypt)
 }
 
@@ -205,7 +221,10 @@ mod tests {
 
     #[test]
     fn too_short_ciphertext_is_length_error() {
-        assert_eq!(decrypt(&generate_key(), b"abc").unwrap_err(), CryptoError::Length);
+        assert_eq!(
+            decrypt(&generate_key(), b"abc").unwrap_err(),
+            CryptoError::Length
+        );
     }
 
     #[test]
@@ -252,7 +271,10 @@ mod tests {
         let vault = Vault::new(generate_key());
         let sealed = vault.seal(b"docs/a.txt", b"file contents").unwrap();
         assert_ne!(sealed, b"file contents");
-        assert_eq!(vault.open(b"docs/a.txt", &sealed).unwrap(), b"file contents");
+        assert_eq!(
+            vault.open(b"docs/a.txt", &sealed).unwrap(),
+            b"file contents"
+        );
     }
 
     #[test]

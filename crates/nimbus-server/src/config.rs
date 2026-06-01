@@ -1,7 +1,10 @@
 /// Runtime configuration, read from environment variables.
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub github_token: String,
+    /// GitHub token from env (a PAT). Optional — OAuth device flow can provide one.
+    pub github_token: Option<String>,
+    /// OAuth App client id, enabling the in-app "Connect GitHub" device flow.
+    pub github_client_id: Option<String>,
     pub drive_owner: String,
     pub drive_repo: String,
     pub drive_branch: String,
@@ -18,8 +21,11 @@ pub struct Config {
     pub ai_base_url: Option<String>,
     pub ai_api_key: Option<String>,
     pub ai_model: Option<String>,
-    /// Directory of built static frontend assets to serve.
-    pub web_dir: String,
+    /// Chat model (for "chat with your files"); defaults per provider.
+    pub ai_chat_model: Option<String>,
+    /// Optional directory of static frontend assets to serve from disk.
+    /// When unset, the frontend embedded in the binary is served.
+    pub web_dir: Option<String>,
 }
 
 impl Config {
@@ -27,7 +33,8 @@ impl Config {
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let req = |k: &str| get(k).ok_or_else(|| anyhow::anyhow!("missing env {k}"));
         Ok(Self {
-            github_token: req("NIMBUS_GITHUB_TOKEN")?,
+            github_token: get("NIMBUS_GITHUB_TOKEN").filter(|s| !s.is_empty()),
+            github_client_id: get("NIMBUS_GITHUB_CLIENT_ID").filter(|s| !s.is_empty()),
             drive_owner: req("NIMBUS_DRIVE_OWNER")?,
             drive_repo: req("NIMBUS_DRIVE_REPO")?,
             drive_branch: get("NIMBUS_DRIVE_BRANCH").unwrap_or_else(|| "main".into()),
@@ -41,7 +48,8 @@ impl Config {
             ai_base_url: get("NIMBUS_AI_BASE_URL").filter(|s| !s.is_empty()),
             ai_api_key: get("NIMBUS_AI_API_KEY").filter(|s| !s.is_empty()),
             ai_model: get("NIMBUS_AI_MODEL").filter(|s| !s.is_empty()),
-            web_dir: get("NIMBUS_WEB_DIR").unwrap_or_else(|| "web/dist".into()),
+            ai_chat_model: get("NIMBUS_AI_CHAT_MODEL").filter(|s| !s.is_empty()),
+            web_dir: get("NIMBUS_WEB_DIR").filter(|s| !s.is_empty()),
         })
     }
 }
