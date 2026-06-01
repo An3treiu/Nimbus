@@ -83,7 +83,7 @@ pub async fn verify_login(
         return Ok(false);
     };
     let got = derive_key(password, &salt).map_err(|e| anyhow::anyhow!("hash: {e}"))?;
-    Ok(got.as_slice() == expected.as_slice())
+    Ok(nimbus_crypto::constant_eq(got.as_slice(), &expected))
 }
 
 /// Create a session for `username` and return its token.

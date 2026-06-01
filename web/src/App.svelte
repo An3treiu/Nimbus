@@ -5,8 +5,11 @@
     search, chatWithFiles, fetchText, previewKind, formatSize,
     authStatus, deviceStart, devicePoll,
     listTrash, restoreTrash, fileHistory, restoreVersion, createShare, getUsage,
-    authMe, login, logout, listActivity,
+    authMe, login, logout, listActivity, folderColors, setFolderColor,
   } from './api.js';
+
+  // SharePoint-style folder color palette.
+  const FOLDER_COLORS = ['#ffb02e', '#6aa3ff', '#34d399', '#f472b6', '#a78bfa', '#f87171', '#22d3ee', '#94a3b8'];
 
   // ---- Core state ----
   let view = $state('drive'); // drive | trash | chat
@@ -32,6 +35,11 @@
 
   // ---- Activity feed ----
   let activity = $state([]);
+
+  // ---- Folder colors (SharePoint-style) ----
+  let folderColorMap = $state({}); // path -> color
+  let colorPickerFor = $state(null); // folder path whose palette is open
+  function folderColor(path) { return folderColorMap[path] || 'var(--folder-default)'; }
 
   // ---- Overlays ----
   let preview = $state(null);
@@ -70,7 +78,16 @@
   async function init() {
     await refresh();
     try { allFiles = await listFiles(); } catch {}
+    try { folderColorMap = await folderColors(); } catch {}
     try { oauthAvailable = (await authStatus()).oauth_available; } catch {}
+  }
+
+  async function pickColor(path, color) {
+    colorPickerFor = null;
+    const next = { ...folderColorMap };
+    if (color) next[path] = color; else delete next[path];
+    folderColorMap = next;
+    try { await setFolderColor(path, color || ''); } catch (e) { status = e.message; }
   }
 
   onMount(async () => {
@@ -123,12 +140,23 @@
     catch (e) { status = e.message; } finally { busy = false; }
   }
 
-  async function onSearch() {
-    if (!query.trim()) { results = null; return; }
+  // Instant, local filename search over all files — no AI required.
+  function onSearch() {
+    const q = query.trim().toLowerCase();
+    if (!q) { results = null; return; }
+    results = allFiles
+      .filter((f) => f.path.toLowerCase().includes(q))
+      .map((f) => ({ path: f.path }));
+  }
+
+  // Optional semantic (AI) search — only when a provider is configured.
+  async function aiSearch() {
+    if (!query.trim()) return;
     busy = true;
     try {
       const hits = await search(query.trim());
-      results = hits === null ? (status = 'Search disabled (set NIMBUS_AI_PROVIDER).', null) : hits;
+      if (hits === null) status = 'AI search is off (set NIMBUS_AI_PROVIDER); showing name matches.';
+      else results = hits;
     } catch (e) { status = e.message; } finally { busy = false; }
   }
 
@@ -255,10 +283,24 @@
   }
 </script>
 
+{#snippet brandLogo(size)}
+  <svg class="logo-svg" style="width:{size}px;height:{size}px" viewBox="0 0 48 48" aria-hidden="true">
+    <defs>
+      <linearGradient id="nimbusG" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#6aa3ff" />
+        <stop offset=".5" stop-color="#a78bfa" />
+        <stop offset="1" stop-color="#22d3ee" />
+      </linearGradient>
+    </defs>
+    <path fill="url(#nimbusG)" d="M36 31a7 7 0 0 0-2.2-13.6A11 11 0 0 0 12.5 17 8 8 0 0 0 13 33h22a6 6 0 0 0 1-2Z" />
+    <circle cx="35" cy="13" r="3.2" fill="#fff" opacity=".95" />
+  </svg>
+{/snippet}
+
 {#if authReady && showLogin}
   <div class="login-screen">
     <div class="login-card">
-      <div class="login-brand">🌥️ Nimbus</div>
+      <div class="login-brand">{@render brandLogo(34)}<span>Nimbus</span></div>
       <p class="muted">Sign in to your drive</p>
       <input placeholder="Username" bind:value={loginUser} onkeydown={(e) => e.key === 'Enter' && doLogin()} />
       <input type="password" placeholder="Password" bind:value={loginPass} onkeydown={(e) => e.key === 'Enter' && doLogin()} />
@@ -270,7 +312,7 @@
 <div class="app">
   <aside class="sidebar" class:collapsed={!sidebarOpen}>
     <div class="brand">
-      <span class="logo">🌥️</span>
+      {@render brandLogo(28)}
       {#if sidebarOpen}<span class="brand-name">Nimbus</span>{/if}
     </div>
     <nav>
@@ -313,8 +355,9 @@
 
       <div class="topbar-actions">
         <div class="searchbar">
-          <input type="search" placeholder="Search semantically…" bind:value={query}
-            onkeydown={(e) => e.key === 'Enter' && onSearch()} />
+          <input type="search" placeholder="Search files…" bind:value={query}
+            oninput={onSearch} onkeydown={(e) => e.key === 'Enter' && onSearch()} />
+          <button class="ai-btn" title="Semantic AI search" onclick={aiSearch} disabled={busy}>✨ AI</button>
         </div>
         <div class="seg">
           <button class:on={viewMode === 'list'} onclick={() => setViewMode('list')} title="List">≣</button>
@@ -352,7 +395,7 @@
         <ul class="rows">
           {#each results as hit}
             <li><button class="name" onclick={() => openPreview(hit.path)}>📄 {hit.path}</button>
-              <span class="muted">{(hit.score * 100).toFixed(0)}%</span></li>
+              {#if hit.score !== undefined}<span class="muted">{(hit.score * 100).toFixed(0)}%</span>{/if}</li>
           {/each}
         </ul>
       {:else if view === 'drive'}
@@ -366,7 +409,25 @@
             {#each visibleEntries as entry}
               {#if entry.kind === 'folder'}
                 <div class="entry folder" class:card={viewMode === 'grid'}>
-                  <button class="name" onclick={() => navigateInto(entry)}>📁 {basename(entry.path)}</button>
+                  <button class="name" onclick={() => navigateInto(entry)}>
+                    <svg class="folder-ico" viewBox="0 0 24 24" style="color:{folderColor(entry.path)}" aria-hidden="true">
+                      <path fill="currentColor" d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2Z"/>
+                    </svg>
+                    {basename(entry.path)}
+                  </button>
+                  <span class="meta">
+                    <span class="actions">
+                      <button title="Folder color" onclick={() => (colorPickerFor = colorPickerFor === entry.path ? null : entry.path)}>🎨</button>
+                    </span>
+                  </span>
+                  {#if colorPickerFor === entry.path}
+                    <div class="palette-pop">
+                      {#each FOLDER_COLORS as c}
+                        <button class="swatch" style="background:{c}" title={c} onclick={() => pickColor(entry.path, c)} aria-label="set color"></button>
+                      {/each}
+                      <button class="swatch reset" title="Reset" onclick={() => pickColor(entry.path, null)}>✕</button>
+                    </div>
+                  {/if}
                 </div>
               {:else}
                 <div class="entry" class:card={viewMode === 'grid'}>

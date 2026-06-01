@@ -303,7 +303,9 @@ impl StorageEngine {
             // Chunked file: fetch and decrypt each chunk, then concatenate.
             let manifest: Manifest = serde_json::from_slice(&raw[MANIFEST_MAGIC.len()..])
                 .map_err(|e| NimbusError::Storage(e.to_string()))?;
-            let mut out = Vec::with_capacity(manifest.size as usize);
+            // Cap the pre-allocation so a tampered manifest can't trigger a huge
+            // up-front allocation; the Vec still grows as chunks arrive.
+            let mut out = Vec::with_capacity((manifest.size as usize).min(8 * 1024 * 1024));
             for chunk_sha in &manifest.chunks {
                 let chunk_raw = self.gh.get_blob(&self.owner, &self.repo, chunk_sha).await?;
                 out.extend(self.open(path, chunk_raw)?);

@@ -72,8 +72,10 @@ async fn require_auth(
             .and_then(|s| s.strip_prefix("Bearer "))
             .map(str::to_string);
         let from_cookie = cookie_value(req.headers(), "nimbus_token");
-        if from_header.or(from_cookie).as_deref() == Some(expected.as_str()) {
-            return Ok(next.run(req).await);
+        if let Some(provided) = from_header.or(from_cookie) {
+            if nimbus_crypto::constant_eq(provided.as_bytes(), expected.as_bytes()) {
+                return Ok(next.run(req).await);
+            }
         }
     }
     // 2. A valid user session.
@@ -115,6 +117,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/restore", post(restore_version))
         .route("/api/sync", post(sync_drive))
         .route("/api/usage", get(usage))
+        .route("/api/folder-meta", get(folder_colors).put(set_folder_color))
         .route("/api/search", get(search_files))
         .route("/api/chat", post(chat))
         .route("/api/auth/status", get(auth_status))
@@ -339,12 +342,23 @@ async fn serve_share(
         Ok(b) => b,
         Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
     };
-    let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+    let raw_name = path.rsplit('/').next().unwrap_or(&path);
+    // Strip quotes / backslashes / control chars to prevent header or filename
+    // injection via a crafted file name.
+    let safe_name: String = raw_name
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
+        .collect();
+    let safe_name = if safe_name.is_empty() {
+        "download".to_string()
+    } else {
+        safe_name
+    };
     (
         [
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{name}\""),
+                format!("attachment; filename=\"{safe_name}\""),
             ),
             (header::REFERRER_POLICY, "no-referrer".to_string()),
         ],
@@ -607,6 +621,33 @@ async fn usage(State(st): State<AppState>) -> Result<Json<Value>, StatusCode> {
     Ok(Json(
         json!({ "used": used, "count": count, "quota": st.engine.quota() }),
     ))
+}
+
+async fn folder_colors(State(st): State<AppState>) -> Result<Json<Value>, StatusCode> {
+    let pairs = crate::folders::colors(&st.pool, &st.engine.drive_id())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let map: serde_json::Map<String, Value> = pairs
+        .into_iter()
+        .map(|(p, c)| (p, Value::String(c)))
+        .collect();
+    Ok(Json(Value::Object(map)))
+}
+
+#[derive(Deserialize)]
+struct FolderColorRequest {
+    path: String,
+    color: String,
+}
+
+async fn set_folder_color(
+    State(st): State<AppState>,
+    Json(req): Json<FolderColorRequest>,
+) -> Result<StatusCode, StatusCode> {
+    crate::folders::set_color(&st.pool, &st.engine.drive_id(), &req.path, &req.color)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn sync_drive(State(st): State<AppState>) -> Result<StatusCode, StatusCode> {

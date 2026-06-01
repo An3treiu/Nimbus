@@ -131,6 +131,21 @@ export async function logout() {
   await fetch('/api/auth/logout', { method: 'POST' });
 }
 
+export async function folderColors() {
+  const r = await apiFetch('/api/folder-meta');
+  if (!r.ok) return {};
+  return r.json();
+}
+
+export async function setFolderColor(path, color) {
+  const r = await apiFetch('/api/folder-meta', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path, color }),
+  });
+  if (!r.ok) throw new Error(`set color failed (${r.status})`);
+}
+
 export async function getUsage() {
   const r = await apiFetch('/api/usage');
   if (!r.ok) return null;
