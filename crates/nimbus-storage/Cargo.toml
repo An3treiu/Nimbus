@@ -8,8 +8,9 @@ nimbus-core = { path = "../nimbus-core" }
 nimbus-github = { path = "../nimbus-github" }
 nimbus-crypto = { path = "../nimbus-crypto" }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 wiremock = "0.6"
-serde_json = { workspace = true }

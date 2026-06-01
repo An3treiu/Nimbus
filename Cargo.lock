@@ -1270,6 +1270,7 @@ dependencies = [
  "nimbus-core",
  "nimbus-crypto",
  "nimbus-github",
+ "serde",
  "serde_json",
  "sqlx",
  "tokio",
