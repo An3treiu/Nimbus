@@ -112,6 +112,49 @@ export async function devicePoll(deviceCode) {
   return r.json();
 }
 
+export async function listTrash() {
+  const r = await apiFetch('/api/trash');
+  if (!r.ok) throw new Error(`trash list failed (${r.status})`);
+  return r.json();
+}
+
+export async function restoreTrash(trashPath) {
+  const r = await apiFetch('/api/trash/restore', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ trash_path: trashPath }),
+  });
+  if (!r.ok) throw new Error(`restore failed (${r.status})`);
+}
+
+export async function fileHistory(path) {
+  const r = await apiFetch(`/api/history/${encodePath(path)}`);
+  if (!r.ok) throw new Error(`history failed (${r.status})`);
+  return r.json();
+}
+
+export async function restoreVersion(path, commit) {
+  const r = await apiFetch('/api/restore', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path, commit }),
+  });
+  if (!r.ok) throw new Error(`restore version failed (${r.status})`);
+}
+
+export async function createShare(path, password, expiresInSecs) {
+  const body = { path };
+  if (password) body.password = password;
+  if (expiresInSecs) body.expires_in_secs = expiresInSecs;
+  const r = await apiFetch('/api/share', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`share failed (${r.status})`);
+  return r.json();
+}
+
 export async function fetchText(path) {
   const r = await apiFetch(downloadUrl(path));
   if (!r.ok) throw new Error(`load failed (${r.status})`);
